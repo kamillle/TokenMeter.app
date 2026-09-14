@@ -71,7 +71,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest discover -s Tests -v
 ```
 
 - 集計・料金・連携設定の変更では、関連する回帰ケースを追加・更新し、テストを実行する。特に累計の重複、分岐、キャッシュ、未知モデル、部分行、取得値の欠落、既存設定の復元を確認する。
-- Swift、同梱リソース、ビルド設定を変更したらビルドと署名検証を行う。文書だけの修正にアプリの再ビルドは不要。
+- Swift、Python、同梱リソース、ビルド設定など実行内容に関わるコードを変更したら、ビルドと署名検証を行い、検証後に常駐中のUsageBarを再起動して変更を反映する。文書だけの修正では、アプリの再ビルド・再起動は不要。
 - 作業用データは `work/` または一時ディレクトリに置く。テストでは匿名化・合成したログと一時的な設定先を使い、ユーザーの認証や設定を必要なく変更しない。
 - collectorには `--offline`、`--state-dir`、`--codex-home`、`--claude-home` がある。実ログを読む場合も検証用キャッシュは本番と分離する。
 - UI確認は `UsageBar.app/Contents/MacOS/UsageBar --preview`。再現用の描画は `--render <snapshot.json> <output.png>`、Claude側はさらに `--claude` を指定する。snapshotはcollectorの出力形式を使う。

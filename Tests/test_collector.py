@@ -103,6 +103,22 @@ class UsageTests(unittest.TestCase):
         self.assertEqual([w['remaining'] for w in windows],[93,1])
         self.assertEqual(windows[0]['label'],'7日')
 
+    def test_provider_link_state_uses_codex_quota_and_claude_bridge(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder)
+            self.assertFalse(c.codex_quota([], state, live=False)['linked'])
+            (state/'codex-quota.json').write_text(json.dumps({'linked':True}))
+            self.assertTrue(c.codex_quota([], state, live=False)['linked'])
+            self.assertFalse(c.claude_quota(state)['linked'])
+            (state/'bridge-config.json').write_text(json.dumps({'installed':True}))
+            self.assertFalse(c.claude_quota(state)['linked'])
+            now = time.time()
+            (state/'claude-status.json').write_text(json.dumps({
+                'observed':now,
+                'rate_limits':{'five_hour':{'used_percentage':10, 'resets_at':now + 3600}}
+            }))
+            self.assertTrue(c.claude_quota(state)['linked'])
+
     def test_bridge_setup_preserves_other_settings_and_restores_exact_statusline(self):
         with tempfile.TemporaryDirectory(prefix='UsageBar') as folder:
             root = Path(folder); state = root/'state'; claude = root/'claude'; claude.mkdir()

@@ -327,7 +327,7 @@ def codex_quota(states, state_dir, live=True, force=False):
     if live and (force or now - cache.get('attempted', 0) >= 300):
         try:
             result = codex_rpc()
-            cache = dict(attempted=now, observed=now, raw=result)
+            cache = dict(attempted=now, observed=now, raw=result, linked=True)
             error = ''
         except (OSError, RuntimeError) as e:
             error = str(e) if isinstance(e, RuntimeError) else 'Codex CLIとの通信に失敗しました'
@@ -345,7 +345,8 @@ def codex_quota(states, state_dir, live=True, force=False):
         source = 'セッションログ'
     else:
         observed, windows, source = 0, [], '未取得'
-    return dict(windows=windows, observed=observed, source=source, error=error,
+    linked = bool(cache.get('linked', bool(cache.get('raw'))) or sample)
+    return dict(windows=windows, observed=observed, source=source, error=error, linked=linked,
                 stale=now - observed > 600, detail='利用枠はアカウント全体で共有されます')
 
 def claude_quota(state_dir):
@@ -365,6 +366,7 @@ def claude_quota(state_dir):
         detail = ('連携済み・Claude Codeからの利用枠通知待ち。Pro/Maxの応答後に更新されます。接続先によっては通知されません' if installed else
                   '「Claude連携」で使用率の通知を受け取れます。セッションのトークン集計は連携前でも利用できます')
     return dict(windows=windows, observed=observed, source='Claude Code通知' if observed else '未取得',
+                linked=installed and bool(windows),
                 error='', stale=time.time() - observed > 600, detail=detail, bridgeInstalled=installed)
 
 def collect(state_dir, codex_home, claude_home, live=True, force=False):

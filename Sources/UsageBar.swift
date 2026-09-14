@@ -19,6 +19,7 @@ struct Quota: Decodable {
     var stale: Bool
     var detail: String
     var bridgeInstalled: Bool?
+    var linked: Bool?
     static var empty: Quota { Quota(windows: [], observed: 0, source: "読み込み中", error: "", stale: true, detail: "") }
     var limiting: LimitWindow? {
         let primary = windows.filter { $0.bucket == "codex" || $0.bucket == "claude" }
@@ -102,6 +103,12 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     let stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/UsageBar")
     func quota(_ provider: String) -> Quota {
         (provider == "codex" ? snapshot?.codex : snapshot?.claude) ?? .empty
+    }
+    func isLinked(_ provider: String) -> Bool {
+        let q = quota(provider)
+        if let linked = q.linked { return linked }
+        if provider == "claude" { return q.bridgeInstalled == true }
+        return !q.windows.isEmpty || (snapshot?.sessions.contains { $0.provider == provider } == true)
     }
     var sessions: [Session] {
         let cutoff = days == 1 ? Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 : Date().timeIntervalSince1970 - Double(days) * 86400
@@ -368,7 +375,7 @@ struct SessionRow: View {
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = Store()
-    var items: [String:NSStatusItem] = [:]
+    var statusItem: NSStatusItem?
     let popover = NSPopover()
     var timer: Timer?
     var previewWindow: NSWindow?
@@ -399,19 +406,16 @@ struct SessionRow: View {
         popover.behavior = .transient
         popover.contentSize = NSSize(width:620,height:680)
         popover.contentViewController = NSHostingController(rootView:Panel(store:store))
-        for provider in ["claude","codex"] {
-            let item = NSStatusBar.system.statusItem(withLength:NSStatusItem.variableLength)
-            if let button = item.button {
-                button.image = brandImage(provider)
-                button.imagePosition = .imageLeading
-                button.title = " —"
-                button.font = .monospacedDigitSystemFont(ofSize:12,weight:.medium)
-                button.target = self
-                button.action = provider == "codex" ? #selector(showCodex) : #selector(showClaude)
-                button.setAccessibilityLabel(provider.capitalized + " 残り利用枠")
-            }
-            items[provider] = item
+        let item = NSStatusBar.system.statusItem(withLength:NSStatusItem.variableLength)
+        if let button = item.button {
+            button.image = NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "UsageBar")
+            button.image?.isTemplate = true
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = #selector(togglePopover)
+            button.setAccessibilityLabel("UsageBar")
         }
+        statusItem = item
         store.onUpdate = { [weak self] in self?.updateStatus() }
         store.refresh()
         timer = Timer.scheduledTimer(withTimeInterval:30,repeats:true) { [weak self] _ in
@@ -424,25 +428,53 @@ struct SessionRow: View {
         }
     }
     func updateStatus() {
-        for (provider,item) in items {
-            let q = store.quota(provider)
-            if let w = q.limiting {
-                item.button?.title = " " + String(format:"%.0f%%",w.remaining) + (q.stale || !store.failure.isEmpty ? "·" : "")
-                item.button?.toolTip = provider.capitalized + " 残り " + String(format:"%.0f%%",w.remaining) + "（" + w.label + "）\n" + q.source + " · " + dateText(q.observed)
-            } else {
-                item.button?.title = " —"
-                item.button?.toolTip = provider.capitalized + " · 利用枠未取得\nクリックしてセッション別の使用量を見る"
-            }
+        guard let button = statusItem?.button else { return }
+        let providers = ["codex", "claude"].filter { store.isLinked($0) }
+        guard let first = providers.first else {
+            button.image = NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "UsageBar")
+            button.image?.isTemplate = true
+            button.imagePosition = .imageOnly
+            button.attributedTitle = NSAttributedString(string: "")
+            button.toolTip = "連携中のアカウントはありません\nクリックして設定を開く"
+            button.setAccessibilityLabel("UsageBar · 連携中のアカウントなし")
+            return
         }
+
+        button.image = brandImage(first)
+        button.imagePosition = .imageLeading
+        let title = NSMutableAttributedString()
+        var descriptions: [String] = []
+        for (index, provider) in providers.enumerated() {
+            let q = store.quota(provider)
+            let value: String
+            if let w = q.limiting {
+                value = String(format:"%.0f%%",w.remaining) + (q.stale || !store.failure.isEmpty ? "·" : "")
+                descriptions.append(provider.capitalized + " 残り " + String(format:"%.0f%%",w.remaining) + "（" + w.label + "） · " + q.source + " · " + dateText(q.observed))
+            } else {
+                value = "—"
+                descriptions.append(provider.capitalized + " · 利用枠未取得")
+            }
+            if index > 0 {
+                title.append(NSAttributedString(string: "   "))
+                let attachment = NSTextAttachment()
+                attachment.image = brandImage(provider, size: 16)
+                attachment.bounds = NSRect(x: 0, y: -3, width: 16, height: 16)
+                title.append(NSAttributedString(attachment: attachment))
+            }
+            title.append(NSAttributedString(string: " " + value, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            ]))
+        }
+        button.attributedTitle = title
+        button.toolTip = descriptions.joined(separator: "\n") + "\nクリックして詳細を見る"
+        button.setAccessibilityLabel(descriptions.joined(separator: "、"))
     }
-    @objc func showCodex() { show("codex") }
-    @objc func showClaude() { show("claude") }
-    func show(_ provider: String) {
-        let alreadySelected = store.selected == provider
-        store.selected = provider
-        if popover.isShown && alreadySelected { popover.performClose(nil); return }
-        if popover.isShown { popover.performClose(nil) }
-        guard let button = items[provider]?.button else { return }
+    @objc func togglePopover() {
+        if popover.isShown { popover.performClose(nil); return }
+        if !store.isLinked(store.selected), let provider = ["codex", "claude"].first(where: { store.isLinked($0) }) {
+            store.selected = provider
+        }
+        guard let button = statusItem?.button else { return }
         NSApp.activate(ignoringOtherApps:true)
         popover.show(relativeTo:button.bounds,of:button,preferredEdge:.minY)
         store.refresh()
