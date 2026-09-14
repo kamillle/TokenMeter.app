@@ -231,7 +231,7 @@ struct Panel: View {
                 Text("参考 USD").frame(width:95, alignment:.trailing)
             }.font(.system(size:9,weight:.semibold)).foregroundStyle(.secondary).padding(.horizontal,26).padding(.bottom,5)
             ScrollView {
-                VStack(spacing: 4) {
+                LazyVStack(spacing: 4) {
                     if store.sessions.isEmpty {
                         VStack(spacing:10) {
                             Image(systemName:"tray").font(.system(size:28)).foregroundStyle(.tertiary)
