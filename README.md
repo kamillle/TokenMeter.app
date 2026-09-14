@@ -39,15 +39,15 @@ Claudeの枠はPro/Maxの応答後に通知されます。API・プロキシ等�
 
 ## ローカルデータ
 
-集計は30秒ごと。初回はログを読み、以後は追記分を読みます。キャッシュは `~/Library/Application Support/UsageBar/` に保存します。保存内容はセッション名・作業ディレクトリ・使用量等の集計メタデータで、会話本文や認証情報は保存しません。セッションデータを外部に送信しません。
+集計はアプリ内のSwift処理で30秒ごとに実行します。初回はログを読み、以後は追記分を読みます。キャッシュは `~/Library/Application Support/UsageBar/` に保存します。保存内容はセッション名・作業ディレクトリ・使用量等の集計メタデータで、会話本文や認証情報は保存しません。セッションデータを外部に送信しません。
 
 ## ビルド・検証
 
-Apple Silicon / macOS 14以降。このMacの `/usr/bin/python3` とインストール済みCodex CLIを利用します。別のMacに配布する場合はPython 3とCodex CLIの用意が必要です。
+Apple Silicon / macOS 14以降。実行にPythonやCommand Line Toolsは不要です。Codexの残り利用枠を直接取得する場合だけ、ログイン済みCodex CLIが必要です。Codex CLIがなくてもアプリとClaude側の機能は動作します。
 
 ```sh
 bash build.sh
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest discover -s Tests -v
+bash Tests/run.sh
 ```
 
 ローカルのad-hoc署名です。App Store配布用の署名・公証はしていません。アプリを移動するときは一度終了し、`UsageBar.app` 全体を移してください。

@@ -1,64 +1,6 @@
 import AppKit
 import SwiftUI
 import ServiceManagement
-
-struct LimitWindow: Decodable, Identifiable {
-    var label: String
-    var remaining: Double
-    var resetsAt: Double
-    var observed: Double
-    var expired: Bool
-    var bucket: String
-    var id: String { bucket + label }
-}
-struct Quota: Decodable {
-    var windows: [LimitWindow]
-    var observed: Double
-    var source: String
-    var error: String
-    var stale: Bool
-    var detail: String
-    var bridgeInstalled: Bool?
-    var linked: Bool?
-    static var empty: Quota { Quota(windows: [], observed: 0, source: "読み込み中", error: "", stale: true, detail: "") }
-    var limiting: LimitWindow? {
-        let primary = windows.filter { $0.bucket == "codex" || $0.bucket == "claude" }
-        return (primary.isEmpty ? windows : primary).filter { !$0.expired }.min { $0.remaining < $1.remaining }
-    }
-}
-struct ModelUsage: Decodable, Identifiable {
-    var model: String
-    var input: Int64
-    var output: Int64
-    var cached: Int64
-    var write: Int64
-    var cost: Double?
-    var id: String { model }
-}
-struct Session: Decodable, Identifiable {
-    var id: String
-    var provider: String
-    var title: String
-    var cwd: String
-    var updated: Double
-    var input: Int64
-    var output: Int64
-    var cached: Int64
-    var write: Int64
-    var cost: Double?
-    var knownCost: Double
-    var unknownModels: [String]
-    var models: [ModelUsage]
-}
-struct Snapshot: Decodable {
-    var updated: Double
-    var sessions: [Session]
-    var codex: Quota
-    var claude: Quota
-    var errors: [String]
-    var pricingDate: String
-    var scope: String
-}
 func compact(_ n: Int64) -> String {
     if n >= 1_000_000 { return String(format: "%.2fM", Double(n) / 1_000_000) }
     if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
@@ -99,8 +41,9 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     @Published var days = 30
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
     var onUpdate: (() -> Void)?
-    var process: Process?
     let stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/UsageBar")
+    let collector = UsageCollector()
+    let bridgeManager = BridgeManager()
     func quota(_ provider: String) -> Quota {
         (provider == "codex" ? snapshot?.codex : snapshot?.claude) ?? .empty
     }
@@ -119,43 +62,29 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     }
     func refresh(force: Bool = false) {
         guard !loading else { return }
-        guard let script = Bundle.main.url(forResource: "collector", withExtension: "py") else {
-            failure = "集計プログラムが見つかりません"; return
-        }
         loading = true
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        p.arguments = [script.path] + (force ? ["--force"] : [])
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin").path
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        p.environment = env
-        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
-        process = p
-        do { try p.run() } catch {
-            loading = false; failure = "Python 3を起動できません。このMacのCommand Line Toolsを確認してください"; return
-        }
+        let collector = collector
+        let bridgeManager = bridgeManager
         DispatchQueue.global(qos: .utility).async {
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            let parsed = try? JSONDecoder().decode(Snapshot.self, from: data)
+            bridgeManager.migrateLegacyBridgeIfNeeded()
+            let result = Result { try collector.collect(force: force) }
             DispatchQueue.main.async {
-                self.loading = false; self.process = nil
-                if let parsed { self.snapshot = parsed; self.failure = "" }
+                self.loading = false
+                if case .success(let snapshot) = result { self.snapshot = snapshot; self.failure = "" }
                 else { self.failure = "集計を更新できませんでした。前回の値を表示しています" }
                 self.onUpdate?()
             }
         }
     }
     func bridge(remove: Bool = false) {
-        guard let script = Bundle.main.url(forResource: "bridge_setup", withExtension: "py") else { return }
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        p.arguments = [script.path] + (remove ? ["--remove"] : [])
-        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
-        do { try p.run() } catch { notice = "Claude連携を設定できませんでした"; return }
+        let bridgeManager = bridgeManager
         DispatchQueue.global(qos: .utility).async {
-            let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            let result = Result { try bridgeManager.setup(remove: remove) }
             DispatchQueue.main.async {
-                self.notice = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "設定を確認してください"
+                switch result {
+                case .success(let message): self.notice = message
+                case .failure(let error): self.notice = error.localizedDescription
+                }
                 self.refresh()
             }
         }
@@ -480,7 +409,7 @@ struct SessionRow: View {
         store.refresh()
     }
     func applicationWillTerminate(_ notification: Notification) {
-        timer?.invalidate(); store.process?.terminate()
+        timer?.invalidate()
     }
 }
 
