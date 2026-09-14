@@ -39,6 +39,7 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     @Published var notice = ""
     @Published var filter = ""
     @Published var days = 30
+    @Published var sessionSort: SessionSort?
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
     var onUpdate: (() -> Void)?
     let stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/UsageBar")
@@ -55,10 +56,14 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     }
     var sessions: [Session] {
         let cutoff = days == 1 ? Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 : Date().timeIntervalSince1970 - Double(days) * 86400
-        return (snapshot?.sessions ?? []).filter {
+        let filtered = (snapshot?.sessions ?? []).filter {
             $0.provider == selected && $0.updated >= cutoff &&
             (filter.isEmpty || ($0.title + $0.cwd + $0.id + $0.models.map(\.model).joined()).localizedCaseInsensitiveContains(filter))
         }
+        return sortedSessions(filtered, by: sessionSort)
+    }
+    func toggleSort(_ key: SessionSortKey) {
+        sessionSort = nextSessionSort(current: sessionSort, key: key)
     }
     func refresh(force: Bool = false) {
         guard !loading else { return }
@@ -154,11 +159,27 @@ struct Panel: View {
                 if !store.filter.isEmpty { Button { store.filter = "" } label: { Image(systemName:"xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain) }
             }.padding(9).background(Color.primary.opacity(0.045),in:RoundedRectangle(cornerRadius:8)).padding(.horizontal,22).padding(.bottom,10)
             HStack {
-                Text("各セッションの累計").frame(maxWidth:.infinity, alignment:.leading)
-                Text("INPUT").frame(width:75, alignment:.trailing)
-                Text("OUTPUT").frame(width:72, alignment:.trailing)
-                Text("参考 USD").frame(width:95, alignment:.trailing)
-            }.font(.system(size:9,weight:.semibold)).foregroundStyle(.secondary).padding(.horizontal,26).padding(.bottom,5)
+                HStack(spacing: 8) {
+                    Text("各セッションの累計")
+                    Button { store.sessionSort = nil } label: {
+                        HStack(spacing: 2) {
+                            Image(systemName: "xmark.circle")
+                            Text("クリア")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(providerColor(store.selected))
+                    .frame(width: 42, alignment: .leading)
+                    .opacity(store.sessionSort == nil ? 0 : 1)
+                    .allowsHitTesting(store.sessionSort != nil)
+                    .accessibilityHidden(store.sessionSort == nil)
+                    .help("並び替えを解除して更新日時順に戻す")
+                    .accessibilityLabel("並び替えをクリア")
+                }.frame(maxWidth:.infinity, alignment:.leading)
+                sortButton("INPUT", key: .input, width: 75)
+                sortButton("OUTPUT", key: .output, width: 72)
+                sortButton("参考 USD", key: .cost, width: 95)
+            }.font(.system(size:9,weight:.semibold)).foregroundStyle(.secondary).frame(height:12).padding(.horizontal,26).padding(.bottom,5)
             ScrollView {
                 LazyVStack(spacing: 4) {
                     if store.sessions.isEmpty {
@@ -189,6 +210,23 @@ struct Panel: View {
                 if let errors = store.snapshot?.errors, !errors.isEmpty { Text(errors.joined(separator:" / ")).font(.caption2).foregroundStyle(.orange) }
             }.padding(.horizontal,22).padding(.vertical,14)
         }.frame(width:620,height:680).background(Color(nsColor:.windowBackgroundColor))
+    }
+    func sortButton(_ title: String, key: SessionSortKey, width: CGFloat) -> some View {
+        let active = store.sessionSort?.key == key
+        let ascending = active && store.sessionSort?.direction == .ascending
+        return Button { store.toggleSort(key) } label: {
+            HStack(spacing: 3) {
+                Text(title)
+                Image(systemName: active ? (ascending ? "chevron.up" : "chevron.down") : "chevron.up.chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(active ? providerColor(store.selected) : Color.secondary.opacity(0.55))
+                    .frame(width: 10, height: 10)
+            }.frame(width: width, alignment: .trailing).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(title + (active ? (ascending ? "：昇順。クリックで並び替えを解除" : "：降順。クリックで昇順") : "で並び替え"))
+        .accessibilityLabel(title + "で並び替え")
+        .accessibilityValue(active ? (ascending ? "昇順" : "降順") : "未選択")
     }
     func providerButton(_ id: String, _ title: String) -> some View {
         Button { store.selected = id; store.filter = "" } label: {

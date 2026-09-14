@@ -6,7 +6,7 @@ BUILD_DIR="${USAGEBAR_BUILD_DIR:-${TMPDIR:-/tmp}/usagebar-build}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources" "$BUILD_DIR/module-cache"
 swiftc -O -parse-as-library -target arm64-apple-macosx14.0 -swift-version 5 -module-cache-path "$BUILD_DIR/module-cache" \
   -framework AppKit -framework SwiftUI -framework ServiceManagement \
-  "$ROOT/Sources/Collector.swift" "$ROOT/Sources/BridgeManager.swift" "$ROOT/Sources/UsageBar.swift" \
+  "$ROOT/Sources/Collector.swift" "$ROOT/Sources/SessionSorting.swift" "$ROOT/Sources/BridgeManager.swift" "$ROOT/Sources/UsageBar.swift" \
   -o "$APP/Contents/MacOS/UsageBar"
 swiftc -O -parse-as-library -target arm64-apple-macosx14.0 -swift-version 5 -module-cache-path "$BUILD_DIR/module-cache" \
   "$ROOT/Sources/ClaudeBridge.swift" -o "$APP/Contents/Helpers/UsageBarClaudeBridge"

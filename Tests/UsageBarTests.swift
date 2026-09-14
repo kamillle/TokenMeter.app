@@ -26,6 +26,7 @@ struct UsageBarTests {
         try test("Claude設定を保持して復元する", bridgePreservesSettings)
         try test("旧ClaudeブリッジをSwift版へ移行する", bridgeMigratesLegacyHelper)
         try test("不正なClaude設定を上書きしない", bridgeRejectsInvalidSettings)
+        try test("セッションを入出力・参考料金で並び替える", sessionSorting)
         print("\(passed) tests passed")
     }
 
@@ -258,6 +259,30 @@ struct UsageBarTests {
             let installed = try Data(contentsOf: state.appendingPathComponent("UsageBarClaudeBridge"))
             try check(installed == Data("swift-helper".utf8), "ヘルパーを更新しない")
         }
+    }
+
+    static func sessionSorting() throws {
+        func session(_ id: String, input: Int64, output: Int64, cost: Double?, updated: Double) -> Session {
+            Session(id: id, provider: "codex", title: id, cwd: "/tmp", updated: updated,
+                    input: input, output: output, cached: 0, write: 0, cost: cost,
+                    knownCost: cost ?? 0, unknownModels: cost == nil ? ["unknown"] : [], models: [])
+        }
+        let rows = [
+            session("a", input: 100, output: 30, cost: 0.03, updated: 1),
+            session("b", input: 300, output: 10, cost: nil, updated: 3),
+            session("c", input: 200, output: 20, cost: 0.01, updated: 2)
+        ]
+        try check(sortedSessions(rows, by: SessionSort(key: .input, direction: .descending)).map(\.id) == ["b", "c", "a"], "入力の降順が不正")
+        try check(sortedSessions(rows, by: SessionSort(key: .output, direction: .ascending)).map(\.id) == ["b", "c", "a"], "出力の昇順が不正")
+        try check(sortedSessions(rows, by: SessionSort(key: .cost, direction: .ascending)).map(\.id) == ["c", "a", "b"], "料金の昇順または未設定の位置が不正")
+        try check(sortedSessions(rows, by: SessionSort(key: .cost, direction: .descending)).map(\.id) == ["a", "c", "b"], "料金の降順または未設定の位置が不正")
+
+        let descending = nextSessionSort(current: nil, key: .input)
+        let ascending = nextSessionSort(current: descending, key: .input)
+        let cleared = nextSessionSort(current: ascending, key: .input)
+        try check(descending == SessionSort(key: .input, direction: .descending), "1回目のクリックで降順にならない")
+        try check(ascending == SessionSort(key: .input, direction: .ascending), "2回目のクリックで昇順にならない")
+        try check(cleared == nil, "3回目のクリックで並び替えを解除しない")
     }
 
     static func json(_ object: [String: Any], to url: URL) throws {
