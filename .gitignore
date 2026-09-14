@@ -1,0 +1,34 @@
+# Generated application and release archives
+/UsageBar.app/
+/*.zip
+/*.dmg
+
+# Build and scratch files
+/.build/
+/build/
+/DerivedData/
+/work/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Local credentials, configuration, and usage data
+.env
+.env.*
+!.env.example
+/.codex/
+/.claude/
+/Application Support/
+*.jsonl
+*.sqlite
+*.sqlite-*
+*snapshot*.json
+*sessions-cache*.json
+*codex-quota*.json
+*claude-status*.json
+*bridge-config*.json
+*statusline-backup*.json
+
+# Previews may contain private session names; keep Sources/Assets tracked
+/*preview*.png
+/*preview*.jpg
