@@ -56,6 +56,8 @@ func appIconImage(size: CGFloat = 28) -> NSImage {
     @Published var lastCodexAccountID: String?
     @Published var page = "usage"
     @Published var providerStatuses: [ProviderStatus] = []
+    @Published var issueDemoActive = false
+    var hasStatusIssue: Bool { issueDemoActive || providerStatuses.contains(where: \.hasIssue) }
     @Published var statusLoading = false
     @Published var statusErrors: [String] = []
     @Published var statusUpdated: Double = 0
@@ -174,6 +176,7 @@ func appIconImage(size: CGFloat = 28) -> NSImage {
                 }
                 self.statusErrors = result.1
                 self.statusLoading = false
+                self.onUpdate?()
             }
         }
     }
@@ -404,6 +407,7 @@ struct Panel: View {
     }
     func pageButton(_ id: String, _ title: String, icon: String) -> some View {
         let active = store.page == id
+        let hasIssue = id == "status" && store.hasStatusIssue
         return Button {
             let switched = store.page != id
             store.page = id
@@ -416,15 +420,15 @@ struct Panel: View {
                 .background(active ? Color(nsColor: .controlBackgroundColor) : .clear, in: RoundedRectangle(cornerRadius: 7))
                 .contentShape(RoundedRectangle(cornerRadius: 7))
                 .overlay(alignment: .topTrailing) {
-                    if id == "status", store.providerStatuses.contains(where: \.hasIssue) {
-                        Circle().fill(Color.orange).frame(width: 6, height: 6).padding(3)
+                    if hasIssue {
+                        Circle().fill(Color.red).frame(width: 6, height: 6).padding(3)
                     }
                 }
         }
         .buttonStyle(.plain)
         .help(title + "に切り替え")
         .accessibilityLabel(title)
-        .accessibilityValue(id == "status" && store.providerStatuses.contains(where: \.hasIssue) ? "障害情報あり" : "")
+        .accessibilityValue(hasIssue ? (store.issueDemoActive ? "障害表示テスト中" : "障害情報あり") : "")
         .accessibilityAddTraits(active ? .isSelected : [])
     }
     func sortButton(_ title: String, key: SessionSortKey, width: CGFloat) -> some View {
@@ -599,7 +603,7 @@ struct StatusPanel: View {
                         .font(.system(size: 10)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
 
-                Text("Statusタブを開いたときと手動更新時に各社の公開ステータスを確認します。表示は全ユーザー・全機能の個別状況を保証するものではありません。")
+                Text("起動時・5分ごと・Statusタブを開いたとき・手動更新時に各社の公開ステータスを確認します。表示は全ユーザー・全機能の個別状況を保証するものではありません。")
                     .font(.system(size: 9)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 2)
             }
@@ -776,12 +780,19 @@ struct SessionRow: View {
     }
 }
 
+@MainActor final class IssueIndicatorView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = Store()
     var statusItem: NSStatusItem?
     let popover = NSPopover()
     var timer: Timer?
     var pricingTimer: Timer?
+    var providerStatusTimer: Timer?
+    var issueBlinkTimer: Timer?
+    let issueDot = IssueIndicatorView(frame: NSRect(x: 4, y: 0, width: 7, height: 7))
     var previewWindow: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let pos = CommandLine.arguments.firstIndex(of: "--render"), CommandLine.arguments.count > pos + 2 {
@@ -824,10 +835,29 @@ struct SessionRow: View {
             button.action = #selector(togglePopover)
             button.setAccessibilityLabel("TokenMeter")
         }
+        issueDot.wantsLayer = true
+        issueDot.layer?.backgroundColor = NSColor.systemRed.cgColor
+        issueDot.layer?.cornerRadius = 3.5
+        issueDot.isHidden = true
+        item.button?.addSubview(issueDot)
         statusItem = item
         store.onUpdate = { [weak self] in self?.updateStatus() }
+        if CommandLine.arguments.contains("--demo-issue") {
+            store.issueDemoActive = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+                self?.store.issueDemoActive = false
+                self?.updateStatus()
+            }
+            updateStatus()
+        }
         store.refresh()
         store.checkPrices()
+        store.refreshStatus()
+        let statusTimer = Timer(timeInterval: 5 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.store.refreshStatus() }
+        }
+        RunLoop.main.add(statusTimer, forMode: .common)
+        providerStatusTimer = statusTimer
         timer = Timer.scheduledTimer(withTimeInterval:30,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.store.refresh() }
         }
@@ -842,6 +872,7 @@ struct SessionRow: View {
     }
     func updateStatus() {
         guard let button = statusItem?.button else { return }
+        defer { updateIssueIndicator() }
         let providers = ["codex", "claude"].filter { store.isLinked($0) }
         guard let first = providers.first else {
             button.image = NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "TokenMeter")
@@ -882,6 +913,41 @@ struct SessionRow: View {
         button.toolTip = descriptions.joined(separator: "\n") + "\nクリックして詳細を見る"
         button.setAccessibilityLabel(descriptions.joined(separator: "、"))
     }
+    private func updateIssueIndicator() {
+        guard let button = statusItem?.button else { return }
+        let isDemo = store.issueDemoActive
+        let hasIssue = store.hasStatusIssue
+        issueDot.isHidden = !hasIssue
+        guard hasIssue else {
+            issueBlinkTimer?.invalidate()
+            issueBlinkTimer = nil
+            issueDot.alphaValue = 1
+            return
+        }
+        // Reserve space before the original image while preserving its template/color behavior.
+        if let original = button.image {
+            let padded = NSImage(size: NSSize(width: original.size.width + 12, height: original.size.height))
+            padded.lockFocus()
+            original.draw(at: NSPoint(x: 12, y: 0), from: .zero, operation: .sourceOver, fraction: 1)
+            padded.unlockFocus()
+            padded.isTemplate = original.isTemplate
+            button.image = padded
+        }
+        issueDot.frame.origin.y = (button.bounds.height - issueDot.frame.height) / 2
+        let issueLabel = isDemo ? "赤い丸の点滅テスト（60秒）" : "障害情報あり（Statusで確認）"
+        button.toolTip = issueLabel + "\n" + (button.toolTip ?? "")
+        button.setAccessibilityLabel(issueLabel + "、" + (button.accessibilityLabel() ?? "TokenMeter"))
+        guard issueBlinkTimer == nil else { return }
+        issueDot.alphaValue = 1
+        let blinkTimer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.issueDot.alphaValue = self.issueDot.alphaValue == 1 ? 0 : 1
+            }
+        }
+        RunLoop.main.add(blinkTimer, forMode: .common)
+        issueBlinkTimer = blinkTimer
+    }
     @objc func togglePopover() {
         if popover.isShown { popover.performClose(nil); return }
         if !store.isLinked(store.selected), let provider = ["codex", "claude"].first(where: { store.isLinked($0) }) {
@@ -895,6 +961,8 @@ struct SessionRow: View {
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         pricingTimer?.invalidate()
+        providerStatusTimer?.invalidate()
+        issueBlinkTimer?.invalidate()
     }
 }
 
