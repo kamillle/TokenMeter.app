@@ -51,7 +51,6 @@ func appIconImage(size: CGFloat = 28) -> NSImage {
     @Published var days = 30
     @Published var sessionSort: SessionSort?
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
-    @Published var pricingEnabled = true
     @Published var pricingChecking = false
     @Published var pricingStatus = PricingCheckStatus()
     @Published var lastCodexAccountID: String?
@@ -66,10 +65,6 @@ func appIconImage(size: CGFloat = 28) -> NSImage {
     let pricingUpdater = OfficialPricingUpdater()
     init() {
         lastCodexAccountID = collector.cachedCodexAccountID()
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: "dailyPricingCheckEnabled") != nil {
-            pricingEnabled = defaults.bool(forKey: "dailyPricingCheckEnabled")
-        }
         pricingStatus = pricingUpdater.readStatus()
     }
     func quota(_ provider: String) -> Quota {
@@ -134,13 +129,8 @@ func appIconImage(size: CGFloat = 28) -> NSImage {
             loginEnabled = SMAppService.mainApp.status == .enabled
         } catch { notice = "ログイン項目を設定できません。アプリをApplicationsフォルダに置いてから再度お試しください" }
     }
-    func togglePricingUpdates() {
-        pricingEnabled.toggle()
-        UserDefaults.standard.set(pricingEnabled, forKey: "dailyPricingCheckEnabled")
-        if pricingEnabled { checkPrices() }
-    }
     func checkPrices(force: Bool = false) {
-        guard !pricingChecking, force || pricingEnabled else { return }
+        guard !pricingChecking else { return }
         if !force && !pricingUpdater.isDue() { return }
         pricingChecking = true
         let updater = pricingUpdater
@@ -239,9 +229,6 @@ struct Panel: View {
             .help(store.page == "usage" ? "使用状況を更新" : "プロバイダーステータスを更新")
             Menu {
                 Button("ログイン時に起動 " + (store.loginEnabled ? "✓" : "")) { store.toggleLogin() }
-                Button("参考単価を毎日確認 " + (store.pricingEnabled ? "✓" : "")) { store.togglePricingUpdates() }
-                Button(store.pricingChecking ? "参考単価を確認中…" : "参考単価を今すぐ確認") { store.checkPrices(force: true) }
-                    .disabled(store.pricingChecking)
                 Button("Claude連携を" + (store.quota("claude").bridgeInstalled == true ? "解除" : "有効にする")) { store.bridge(remove: store.quota("claude").bridgeInstalled == true) }
                 Divider()
                 Button("TokenMeterを終了") { NSApplication.shared.terminate(nil) }
