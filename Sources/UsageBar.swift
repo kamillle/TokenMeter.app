@@ -18,6 +18,7 @@ func dateText(_ time: Double) -> String {
 func providerColor(_ provider: String) -> Color {
     provider == "codex" ? Color(red: 0.12, green: 0.57, blue: 0.49) : Color(red: 0.76, green: 0.42, blue: 0.29)
 }
+let sessionMetricWidth: CGFloat = 84
 
 // User-selected PNGs are bundled locally; AppKit adapts the black mark to the menu-bar appearance.
 func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
@@ -233,8 +234,8 @@ struct Panel: View {
             } label: { Image(systemName: "gearshape") }.menuStyle(.borderlessButton).frame(width: 24)
         }
         .padding(.horizontal, 22)
-        .padding(.top, 20)
-        .frame(height: 75, alignment: .top)
+        .padding(.top, 12)
+        .frame(height: 58, alignment: .top)
     }
 
     private var pageTabs: some View {
@@ -245,7 +246,7 @@ struct Panel: View {
         .padding(4)
         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
         .padding(.horizontal, 22)
-        .frame(height: 52, alignment: .top)
+        .frame(height: 44, alignment: .top)
     }
 
     private var usageContent: some View {
@@ -253,7 +254,7 @@ struct Panel: View {
             HStack(spacing: 8) {
                 providerButton("codex", "Codex")
                 providerButton("claude", "Claude")
-            }.padding(.horizontal, 22).padding(.bottom, 16)
+            }.padding(.horizontal, 22).padding(.bottom, 8)
             quotaCard.padding(.horizontal, 22)
             if !store.failure.isEmpty { Text(store.failure).font(.caption).foregroundStyle(.orange).padding(.horizontal, 22).padding(.top, 8) }
             if !store.notice.isEmpty {
@@ -262,19 +263,21 @@ struct Panel: View {
             HStack {
                 Text("セッション").font(.system(size: 14, weight: .semibold))
                 Text("\(store.sessions.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                Spacer()
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
+                    TextField("セッション・モデル・プロジェクトを検索", text: $store.filter)
+                        .textFieldStyle(.plain).font(.system(size: 11))
+                    if !store.filter.isEmpty {
+                        Button { store.filter = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain)
+                    }
+                }.padding(7).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
                 Picker("更新日", selection: $store.days) {
                     Text("今日更新").tag(1); Text("7日以内").tag(7); Text("30日以内").tag(30)
-                }.labelsHidden().frame(width: 110).controlSize(.small)
-            }.padding(.horizontal,22).padding(.top,20).padding(.bottom,10)
-            HStack(spacing:8) {
-                Image(systemName:"magnifyingglass").foregroundStyle(.tertiary)
-                TextField("セッション名・モデル・プロジェクトで検索", text: $store.filter).textFieldStyle(.plain).font(.system(size:12))
-                if !store.filter.isEmpty { Button { store.filter = "" } label: { Image(systemName:"xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain) }
-            }.padding(9).background(Color.primary.opacity(0.045),in:RoundedRectangle(cornerRadius:8)).padding(.horizontal,22).padding(.bottom,10)
-            HStack {
-                HStack(spacing: 8) {
-                    Text("各セッションの累計")
+                }.labelsHidden().frame(width: 95).controlSize(.small)
+            }.padding(.horizontal,22).padding(.top,12).padding(.bottom,8)
+            HStack(spacing: 0) {
+                Text("各セッションの累計").frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 0) {
                     Button { store.sessionSort = nil } label: {
                         HStack(spacing: 2) {
                             Image(systemName: "xmark.circle")
@@ -283,16 +286,18 @@ struct Panel: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(providerColor(store.selected))
-                    .frame(width: 42, alignment: .leading)
+                    .fixedSize()
                     .opacity(store.sessionSort == nil ? 0 : 1)
                     .allowsHitTesting(store.sessionSort != nil)
                     .accessibilityHidden(store.sessionSort == nil)
                     .help("並び替えを解除して更新日時順に戻す")
                     .accessibilityLabel("並び替えをクリア")
-                }.frame(maxWidth:.infinity, alignment:.leading)
-                sortButton("INPUT", key: .input, width: 75)
-                sortButton("OUTPUT", key: .output, width: 72)
-                sortButton("参考 USD", key: .cost, width: 95)
+                    Spacer(minLength: 0).frame(width: 10)
+                    sortButton("INPUT", key: .input, width: 42)
+                }
+                .frame(width: sessionMetricWidth, alignment: .trailing)
+                sortButton("OUTPUT", key: .output, width: sessionMetricWidth)
+                sortButton("参考 USD", key: .cost, width: sessionMetricWidth)
             }.font(.system(size:9,weight:.semibold)).foregroundStyle(.secondary).frame(height:12).padding(.horizontal,26).padding(.bottom,5)
             ScrollView {
                 LazyVStack(spacing: 4) {
@@ -307,7 +312,7 @@ struct Panel: View {
                 }.padding(.horizontal,16).padding(.bottom,8)
             }.frame(minHeight:0,maxHeight:.infinity)
             Divider()
-            VStack(alignment:.leading,spacing:7) {
+            VStack(alignment:.leading,spacing:4) {
                 HStack {
                     Text("表示中の累計").foregroundStyle(.secondary)
                     Spacer()
@@ -327,7 +332,7 @@ struct Panel: View {
                     if store.pricingStatus.lastSuccess > 0 { Text("確認 " + dateText(store.pricingStatus.lastSuccess)) }
                 }.font(.system(size:9)).foregroundStyle(.tertiary)
                 if let errors = store.snapshot?.errors, !errors.isEmpty { Text(errors.joined(separator:" / ")).font(.caption2).foregroundStyle(.orange) }
-            }.padding(.horizontal,22).padding(.vertical,14)
+            }.padding(.horizontal,22).padding(.vertical,10)
         }
     }
     func pageButton(_ id: String, _ title: String, icon: String) -> some View {
@@ -379,7 +384,7 @@ struct Panel: View {
                 Spacer()
                 if let limit = store.quota(id).limiting { Text(String(format:"%.0f%%",limit.remaining)).font(.system(size:13,weight:.semibold,design:.rounded)).monospacedDigit() }
                 else { Text("—").foregroundStyle(.secondary) }
-            }.padding(.horizontal,14).padding(.vertical,12)
+            }.padding(.horizontal,14).padding(.vertical,8)
             .foregroundStyle(store.selected == id ? providerColor(id) : Color.secondary)
             .background(store.selected == id ? providerColor(id).opacity(0.10) : Color.primary.opacity(0.03),in:RoundedRectangle(cornerRadius:10))
             .overlay(RoundedRectangle(cornerRadius:10).strokeBorder(store.selected == id ? providerColor(id).opacity(0.30) : .clear,lineWidth:1))
@@ -387,7 +392,7 @@ struct Panel: View {
     }
     var quotaCard: some View {
         let q = store.quota(store.selected)
-        return VStack(alignment:.leading,spacing:10) {
+        return VStack(alignment:.leading,spacing:6) {
             if store.selected == "codex" {
                 HStack(spacing: 6) {
                     Text("アカウントID").font(.system(size:10)).foregroundStyle(.secondary)
@@ -406,7 +411,7 @@ struct Panel: View {
                     VStack(spacing:5) {
                         HStack(alignment:.firstTextBaseline) {
                             Text(window.label).font(.system(size:11)).foregroundStyle(.secondary)
-                            Text(window.expired ? "更新待ち" : String(format:"%.0f%%",window.remaining)).font(.system(size:24,weight:.semibold,design:.rounded)).foregroundStyle(window.expired ? Color.secondary : providerColor(store.selected)).monospacedDigit()
+                            Text(window.expired ? "更新待ち" : String(format:"%.0f%%",window.remaining)).font(.system(size:20,weight:.semibold,design:.rounded)).foregroundStyle(window.expired ? Color.secondary : providerColor(store.selected)).monospacedDigit()
                             Spacer()
                             Text(window.resetsAt > 0 ? "リセット " + dateText(window.resetsAt) : "リセット時刻未取得").font(.system(size:10)).foregroundStyle(.secondary)
                         }
@@ -434,7 +439,7 @@ struct Panel: View {
                     Button("Claudeの利用状況を開く") { NSWorkspace.shared.open(URL(string:"https://claude.ai/settings/usage")!) }.controlSize(.small)
                 }
             }
-        }.padding(16).background(Color.primary.opacity(0.028),in:RoundedRectangle(cornerRadius:12))
+        }.padding(12).background(Color.primary.opacity(0.028),in:RoundedRectangle(cornerRadius:12))
     }
 }
 
@@ -610,9 +615,9 @@ struct SessionRow: View {
                         }
                         Text(dateText(session.updated) + " · " + session.models.map(\.model).joined(separator:", ")).font(.system(size:9)).foregroundStyle(.secondary).lineLimit(1)
                     }.frame(maxWidth:.infinity,alignment:.leading)
-                    Text(compact(session.input)).frame(width:75,alignment:.trailing)
-                    Text(compact(session.output)).frame(width:72,alignment:.trailing)
-                    Text(money(session.cost)).foregroundStyle(session.cost == nil ? Color.secondary : providerColor(session.provider)).frame(width:95,alignment:.trailing)
+                    Text(compact(session.input)).frame(width:sessionMetricWidth,alignment:.trailing)
+                    Text(compact(session.output)).frame(width:sessionMetricWidth,alignment:.trailing)
+                    Text(money(session.cost)).foregroundStyle(session.cost == nil ? Color.secondary : providerColor(session.provider)).frame(width:sessionMetricWidth,alignment:.trailing)
                 }.font(.system(size:11,design:.monospaced)).contentShape(Rectangle()).padding(10)
             }.buttonStyle(.plain)
             if expanded {
