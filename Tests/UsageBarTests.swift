@@ -22,6 +22,8 @@ struct UsageBarTests {
         try test("オフライン集計を差分更新する", offlineCollection)
         try test("利用枠の0・欠落・期限切れを区別する", quotaEdgeCases)
         try test("複数の利用枠を保持する", multipleBuckets)
+        try test("CodexアカウントIDを取得・保持する", codexAccountID)
+        try test("公式ステータスと進行中インシデントを読む", providerStatusParsing)
         try test("連携状態を正しく判定する", providerLinkState)
         try test("Claude設定を保持して復元する", bridgePreservesSettings)
         try test("旧ClaudeブリッジをSwift版へ移行する", bridgeMigratesLegacyHelper)
@@ -200,6 +202,55 @@ struct UsageBarTests {
         ]]
         let windows = c.codexWindows(result, observed: now, now: now)
         try check(windows.map(\.remaining) == [93, 1] && windows[0].label == "7日", "複数枠が不正")
+    }
+
+    static func codexAccountID() throws {
+        try temporary { root in
+            let c = collector(root: root)
+            try check(c.codexAccountID(["account": ["type": "chatgpt", "email": " user@example.com "]]) == "user@example.com", "メールアドレスをアカウントIDとして読めない")
+            try check(c.codexAccountID(["account": ["type": "apiKey"]]) == nil, "存在しないIDを推測した")
+            let state = root.appendingPathComponent("state")
+            try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+            let now = Date().timeIntervalSince1970
+            try json(["observed": now, "raw": ["rateLimits": ["primary": ["usedPercent": 10]]],
+                      "accountID": "user@example.com", "linked": true],
+                     to: state.appendingPathComponent("codex-quota.json"))
+            try check(c.codexQuota(states: [], live: false, force: false).accountID == "user@example.com", "キャッシュしたアカウントIDを保持しない")
+            try check(c.cachedCodexAccountID() == "user@example.com", "起動直後にキャッシュしたアカウントIDを読めない")
+            var newerLog = c.newState(for: root.appendingPathComponent("session.jsonl"), provider: "codex")
+            newerLog.rate = RateSample(raw: JSONValue(any: ["primary": ["used_percent": 20]]), observed: now + 1)
+            let quotaFromLog = c.codexQuota(states: [newerLog], live: false, force: false)
+            try check(quotaFromLog.source == "セッションログ" && quotaFromLog.accountID == "user@example.com", "ログの利用枠を使うと保存済みIDが消える")
+        }
+    }
+
+    static func providerStatusParsing() throws {
+        let summary = Data(#"""
+        {
+          "page":{"updated_at":"2026-09-15T09:10:54.237Z","url":"https://status.example.com"},
+          "status":{"indicator":"minor","description":"Minor Service Outage"},
+          "components":[
+            {"id":"codex","name":"Codex API","status":"operational"},
+            {"id":"files","name":"Files","status":"partial_outage"}
+          ]
+        }
+        """#.utf8)
+        let incidents = Data(#"""
+        {
+          "incidents":[
+            {"id":"active","name":"Elevated errors","status":"monitoring","impact":"minor","updated_at":"2026-09-15T09:00:00Z","resolved_at":null,
+             "incident_updates":[{"body":"Recovery is being monitored.","status":"monitoring","created_at":"2026-09-15T08:30:00Z"}]},
+            {"id":"done","name":"Resolved issue","status":"resolved","impact":"minor","updated_at":"2026-09-14T09:00:00Z","resolved_at":"2026-09-14T09:00:00Z","incident_updates":[]}
+          ]
+        }
+        """#.utf8)
+        let result = try ProviderStatusService().parse(summaryData: summary, incidentsData: incidents,
+                                                       providerID: "openai", providerName: "OpenAI", baseURL: "https://status.example.com")
+        try check(result.hasIssue, "障害状態を検出しない")
+        try check(result.incidents.count == 1 && result.incidents[0].id == "active", "解決済みインシデントを除外しない")
+        try check(result.incidents[0].url == "https://status.example.com/incidents/active", "インシデントURLが不正")
+        try check(result.relevantComponents.map(\.id) == ["codex", "files"], "関連項目または障害中の項目を表示しない")
+        try check(result.updated > 0, "小数秒付き日時を読めない")
     }
 
     static func providerLinkState() throws {

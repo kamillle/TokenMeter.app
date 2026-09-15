@@ -18,6 +18,7 @@ struct Quota: Codable, Equatable {
     var error: String
     var stale: Bool
     var detail: String
+    var accountID: String? = nil
     var bridgeInstalled: Bool?
     var linked: Bool?
 
@@ -213,6 +214,8 @@ private struct CodexQuotaCache: Codable {
     var attempted: Double?
     var observed: Double?
     var raw: JSONValue?
+    var accountID: String?
+    var accountIDChecked: Bool?
     var linked: Bool?
     var error: String?
 }
@@ -519,16 +522,31 @@ final class UsageCollector: @unchecked Sendable {
         return windows
     }
 
+    func codexAccountID(_ result: [String: Any]) -> String? {
+        guard let account = object(result["account"]),
+              let email = string(account["email"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !email.isEmpty else { return nil }
+        return email
+    }
+
+    func cachedCodexAccountID() -> String? {
+        readCodable(CodexQuotaCache.self, from: stateDirectory.appendingPathComponent("codex-quota.json"))?.accountID
+    }
+
     func codexQuota(states: [FileState], live: Bool, force: Bool) -> Quota {
         let now = Date().timeIntervalSince1970
         let path = stateDirectory.appendingPathComponent("codex-quota.json")
         var cache = readCodable(CodexQuotaCache.self, from: path) ?? CodexQuotaCache()
-        if live && (force || now - (cache.attempted ?? 0) >= 300) {
+        let needsAccountIDBackfill = cache.raw != nil && cache.accountIDChecked != true
+        if live && (force || needsAccountIDBackfill || now - (cache.attempted ?? 0) >= 300) {
             do {
                 let result = try codexRPC()
-                cache = CodexQuotaCache(attempted: now, observed: now, raw: JSONValue(any: result), linked: true, error: "")
+                cache = CodexQuotaCache(attempted: now, observed: now, raw: JSONValue(any: result.rateLimits),
+                                        accountID: result.accountID ?? cache.accountID, accountIDChecked: true,
+                                        linked: true, error: "")
             } catch {
                 cache.attempted = now
+                cache.accountIDChecked = true
                 cache.error = (error as? LocalizedError)?.errorDescription ?? "Codex CLIとの通信に失敗しました"
             }
             try? atomicWrite(cache, to: path)
@@ -538,23 +556,27 @@ final class UsageCollector: @unchecked Sendable {
         let observed: Double
         let windows: [LimitWindow]
         let source: String
+        let accountID: String?
         if let raw = cache.raw?.object, sample == nil || cacheObserved >= (sample?.observed ?? 0) {
             observed = cacheObserved
             windows = codexWindows(raw, observed: observed)
             source = "Codexアカウント"
+            accountID = cache.accountID
         } else if let sample, let raw = sample.raw.object {
             observed = sample.observed
             windows = codexWindows(raw, observed: observed, snake: true)
             source = "セッションログ"
+            accountID = cache.accountID
         } else {
             observed = 0
             windows = []
             source = "未取得"
+            accountID = cache.accountID
         }
         let linked = (cache.linked ?? (cache.raw != nil)) || sample != nil
         return Quota(windows: windows, observed: observed, source: source, error: cache.error ?? "",
                      stale: now - observed > 600, detail: "利用枠はアカウント全体で共有されます",
-                     bridgeInstalled: nil, linked: linked)
+                     accountID: accountID, bridgeInstalled: nil, linked: linked)
     }
 
     func claudeQuota(now: Double = Date().timeIntervalSince1970) -> Quota {
@@ -636,7 +658,7 @@ final class UsageCollector: @unchecked Sendable {
         return titles
     }
 
-    private func codexRPC() throws -> [String: Any] {
+    private func codexRPC() throws -> (rateLimits: [String: Any], accountID: String?) {
         let environment = ProcessInfo.processInfo.environment
         var candidates: [String] = []
         if let configured = environment["USAGEBAR_CODEX"] { candidates.append(configured) }
@@ -685,10 +707,13 @@ final class UsageCollector: @unchecked Sendable {
         try send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "usagebar", "version": "1.0.0"], "capabilities": [:]]])
         _ = try receiver.wait(for: 1, timeout: 12)
         try send(["method": "initialized"])
-        try send(["id": 2, "method": "account/rateLimits/read"])
-        let response = try receiver.wait(for: 2, timeout: 12)
+        try send(["id": 2, "method": "account/read", "params": ["refreshToken": false]])
+        try send(["id": 3, "method": "account/rateLimits/read"])
+        let response = try receiver.wait(for: 3, timeout: 12)
         if response["error"] != nil { throw CollectorError.message("Codexで利用枠を取得できません。ログイン状態を確認してください") }
-        return object(response["result"]) ?? [:]
+        let accountResponse = try? receiver.wait(for: 2, timeout: 4)
+        let accountID = accountResponse.flatMap { object($0["result"]) }.flatMap(codexAccountID)
+        return (object(response["result"]) ?? [:], accountID)
     }
 
     private func ensurePrivateDirectory(_ url: URL) throws {

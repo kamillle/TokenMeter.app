@@ -5,7 +5,7 @@ TEST_BUILD="$(mktemp -d "${TMPDIR:-/tmp}/usagebar-tests.XXXXXX")"
 trap 'rm -rf "$TEST_BUILD"' EXIT
 mkdir -p "$TEST_BUILD/module-cache"
 swiftc -parse-as-library -swift-version 5 -module-cache-path "$TEST_BUILD/module-cache" \
-  "$ROOT/Sources/Collector.swift" "$ROOT/Sources/PricingUpdater.swift" "$ROOT/Sources/SessionSorting.swift" "$ROOT/Sources/BridgeManager.swift" "$ROOT/Tests/UsageBarTests.swift" \
+  "$ROOT/Sources/Collector.swift" "$ROOT/Sources/PricingUpdater.swift" "$ROOT/Sources/ProviderStatus.swift" "$ROOT/Sources/SessionSorting.swift" "$ROOT/Sources/BridgeManager.swift" "$ROOT/Tests/UsageBarTests.swift" \
   -o "$TEST_BUILD/UsageBarTests"
 cd "$ROOT"
 "$TEST_BUILD/UsageBarTests"

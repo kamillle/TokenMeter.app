@@ -44,11 +44,18 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     @Published var pricingEnabled = true
     @Published var pricingChecking = false
     @Published var pricingStatus = PricingCheckStatus()
+    @Published var lastCodexAccountID: String?
+    @Published var page = "usage"
+    @Published var providerStatuses: [ProviderStatus] = []
+    @Published var statusLoading = false
+    @Published var statusErrors: [String] = []
+    @Published var statusUpdated: Double = 0
     var onUpdate: (() -> Void)?
     let collector = UsageCollector()
     let bridgeManager = BridgeManager()
     let pricingUpdater = OfficialPricingUpdater()
     init() {
+        lastCodexAccountID = collector.cachedCodexAccountID()
         let defaults = UserDefaults.standard
         if defaults.object(forKey: "dailyPricingCheckEnabled") != nil {
             pricingEnabled = defaults.bool(forKey: "dailyPricingCheckEnabled")
@@ -56,7 +63,9 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
         pricingStatus = pricingUpdater.readStatus()
     }
     func quota(_ provider: String) -> Quota {
-        (provider == "codex" ? snapshot?.codex : snapshot?.claude) ?? .empty
+        var quota = (provider == "codex" ? snapshot?.codex : snapshot?.claude) ?? .empty
+        if provider == "codex", quota.accountID == nil { quota.accountID = lastCodexAccountID }
+        return quota
     }
     func isLinked(_ provider: String) -> Bool {
         let q = quota(provider)
@@ -85,7 +94,11 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
             let result = Result { try collector.collect(force: force) }
             DispatchQueue.main.async {
                 self.loading = false
-                if case .success(let snapshot) = result { self.snapshot = snapshot; self.failure = "" }
+                if case .success(let snapshot) = result {
+                    self.snapshot = snapshot
+                    self.lastCodexAccountID = snapshot.codex.accountID ?? self.lastCodexAccountID
+                    self.failure = ""
+                }
                 else { self.failure = "集計を更新できませんでした。前回の値を表示しています" }
                 self.onUpdate?()
             }
@@ -142,32 +155,101 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
             }
         }
     }
+    func refreshStatus() {
+        guard !statusLoading else { return }
+        statusLoading = true
+        Task {
+            let result = await ProviderStatusService().fetch()
+            await MainActor.run {
+                if !result.0.isEmpty {
+                    for provider in result.0 {
+                        if let index = self.providerStatuses.firstIndex(where: { $0.id == provider.id }) {
+                            self.providerStatuses[index] = provider
+                        } else {
+                            self.providerStatuses.append(provider)
+                        }
+                    }
+                    self.providerStatuses.sort { $0.id > $1.id }
+                    self.statusUpdated = Date().timeIntervalSince1970
+                }
+                self.statusErrors = result.1
+                self.statusLoading = false
+            }
+        }
+    }
 }
 
 struct Panel: View {
     @ObservedObject var store: Store
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "chart.bar.xaxis").font(.system(size: 21, weight: .semibold)).foregroundStyle(providerColor(store.selected))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("UsageBar").font(.system(size: 19, weight: .bold, design: .rounded))
-                    Text("AIの利用状況を、ひと目で").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if store.loading { ProgressView().controlSize(.small) }
-                Button { store.refresh(force: true) } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).disabled(store.loading).help("使用状況を更新")
-                Menu {
-                    Button("ログイン時に起動 " + (store.loginEnabled ? "✓" : "")) { store.toggleLogin() }
-                    Button("参考単価を毎日確認 " + (store.pricingEnabled ? "✓" : "")) { store.togglePricingUpdates() }
-                    Button(store.pricingChecking ? "参考単価を確認中…" : "参考単価を今すぐ確認") { store.checkPrices(force: true) }
-                        .disabled(store.pricingChecking)
-                    Button("Claude連携を" + (store.quota("claude").bridgeInstalled == true ? "解除" : "有効にする")) { store.bridge(remove: store.quota("claude").bridgeInstalled == true) }
-                    Divider()
-                    Button("UsageBarを終了") { NSApplication.shared.terminate(nil) }
-                } label: { Image(systemName: "gearshape") }.menuStyle(.borderlessButton).frame(width: 24)
-            }.padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 16)
+            header
+            pageTabs
+            // A tab's minimum content height must never move the shared header.
+            GeometryReader { geometry in
+                ZStack(alignment: .topLeading) {
+                    usageContent
+                        .opacity(store.page == "usage" ? 1 : 0)
+                        .allowsHitTesting(store.page == "usage")
+                        .accessibilityHidden(store.page != "usage")
 
+                    StatusPanel(store: store)
+                        .opacity(store.page == "status" ? 1 : 0)
+                        .allowsHitTesting(store.page == "status")
+                        .accessibilityHidden(store.page != "status")
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                .clipped()
+            }
+        }
+        .frame(width: 620, height: 680, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "chart.bar.xaxis").font(.system(size: 21, weight: .semibold)).foregroundStyle(providerColor(store.selected))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("UsageBar").font(.system(size: 19, weight: .bold, design: .rounded))
+                Text("AIの利用状況を、ひと目で").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if store.page == "usage" ? store.loading : store.statusLoading { ProgressView().controlSize(.small) }
+            Button {
+                if store.page == "usage" { store.refresh(force: true) }
+                else { store.refreshStatus() }
+            } label: { Image(systemName: "arrow.clockwise") }
+            .buttonStyle(.plain)
+            .disabled(store.page == "usage" ? store.loading : store.statusLoading)
+            .help(store.page == "usage" ? "使用状況を更新" : "プロバイダーステータスを更新")
+            Menu {
+                Button("ログイン時に起動 " + (store.loginEnabled ? "✓" : "")) { store.toggleLogin() }
+                Button("参考単価を毎日確認 " + (store.pricingEnabled ? "✓" : "")) { store.togglePricingUpdates() }
+                Button(store.pricingChecking ? "参考単価を確認中…" : "参考単価を今すぐ確認") { store.checkPrices(force: true) }
+                    .disabled(store.pricingChecking)
+                Button("Claude連携を" + (store.quota("claude").bridgeInstalled == true ? "解除" : "有効にする")) { store.bridge(remove: store.quota("claude").bridgeInstalled == true) }
+                Divider()
+                Button("UsageBarを終了") { NSApplication.shared.terminate(nil) }
+            } label: { Image(systemName: "gearshape") }.menuStyle(.borderlessButton).frame(width: 24)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 20)
+        .frame(height: 75, alignment: .top)
+    }
+
+    private var pageTabs: some View {
+        HStack(spacing: 6) {
+            pageButton("usage", "UsageBar", icon: "chart.bar.xaxis")
+            pageButton("status", "Status", icon: "waveform.path.ecg")
+        }
+        .padding(4)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+        .padding(.horizontal, 22)
+        .frame(height: 52, alignment: .top)
+    }
+
+    private var usageContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 providerButton("codex", "Codex")
                 providerButton("claude", "Claude")
@@ -223,7 +305,7 @@ struct Panel: View {
                     }
                     ForEach(store.sessions) { session in SessionRow(session: session) }
                 }.padding(.horizontal,16).padding(.bottom,8)
-            }.frame(minHeight:160,maxHeight:.infinity)
+            }.frame(minHeight:0,maxHeight:.infinity)
             Divider()
             VStack(alignment:.leading,spacing:7) {
                 HStack {
@@ -246,7 +328,29 @@ struct Panel: View {
                 }.font(.system(size:9)).foregroundStyle(.tertiary)
                 if let errors = store.snapshot?.errors, !errors.isEmpty { Text(errors.joined(separator:" / ")).font(.caption2).foregroundStyle(.orange) }
             }.padding(.horizontal,22).padding(.vertical,14)
-        }.frame(width:620,height:680).background(Color(nsColor:.windowBackgroundColor))
+        }
+    }
+    func pageButton(_ id: String, _ title: String, icon: String) -> some View {
+        let active = store.page == id
+        return Button {
+            store.page = id
+            if id == "status", store.providerStatuses.isEmpty { store.refreshStatus() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                Text(title).fontWeight(.semibold)
+                if id == "status", store.providerStatuses.contains(where: \.hasIssue) {
+                    Circle().fill(Color.orange).frame(width: 6, height: 6).accessibilityLabel("障害情報あり")
+                }
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(active ? Color.primary : Color.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(active ? Color(nsColor: .controlBackgroundColor) : .clear, in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
     func sortButton(_ title: String, key: SessionSortKey, width: CGFloat) -> some View {
         let active = store.sessionSort?.key == key
@@ -282,6 +386,12 @@ struct Panel: View {
     var quotaCard: some View {
         let q = store.quota(store.selected)
         return VStack(alignment:.leading,spacing:10) {
+            if store.selected == "codex" {
+                HStack(spacing: 6) {
+                    Text("アカウントID").font(.system(size:10)).foregroundStyle(.secondary)
+                    Text(q.accountID ?? "未取得").font(.system(size:11,weight:.medium,design:.monospaced)).lineLimit(1).textSelection(.enabled)
+                }
+            }
             HStack {
                 Text("残り利用枠").font(.system(size:12,weight:.semibold))
                 Spacer()
@@ -323,6 +433,164 @@ struct Panel: View {
                 }
             }
         }.padding(16).background(Color.primary.opacity(0.028),in:RoundedRectangle(cornerRadius:12))
+    }
+}
+
+struct StatusPanel: View {
+    @ObservedObject var store: Store
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("プロバイダー ステータス").font(.system(size: 15, weight: .semibold))
+                        Text("OpenAIとAnthropicの公式稼働情報").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if store.statusUpdated > 0 {
+                        Text("取得 " + dateText(store.statusUpdated)).font(.system(size: 9)).foregroundStyle(.tertiary)
+                    }
+                }
+
+                if store.providerStatuses.isEmpty {
+                    VStack(spacing: 10) {
+                        if store.statusLoading { ProgressView().controlSize(.small) }
+                        Image(systemName: store.statusLoading ? "network" : "exclamationmark.arrow.triangle.2.circlepath")
+                            .font(.system(size: 27)).foregroundStyle(.tertiary)
+                        Text(store.statusLoading ? "公式ステータスを取得しています…" : "ステータスを取得できませんでした")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity).padding(.vertical, 70)
+                }
+
+                ForEach(store.providerStatuses) { provider in
+                    ProviderStatusCard(provider: provider)
+                }
+
+                if !store.statusErrors.isEmpty {
+                    Text(store.statusErrors.joined(separator: "\n"))
+                        .font(.system(size: 10)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text("各社の公開ステータスを5分ごとに確認します。表示は全ユーザー・全機能の個別状況を保証するものではありません。")
+                    .font(.system(size: 9)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
+            }
+            .padding(.horizontal, 22)
+            .padding(.bottom, 18)
+        }
+    }
+}
+
+struct ProviderStatusCard: View {
+    let provider: ProviderStatus
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                Image(nsImage: brandImage(provider.id == "openai" ? "codex" : "claude", size: 20))
+                    .renderingMode(provider.id == "openai" ? .template : .original)
+                    .resizable().frame(width: 20, height: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(provider.name).font(.system(size: 14, weight: .semibold))
+                    Text(statusLabel(provider.indicator, fallback: provider.description))
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(statusColor(provider.indicator))
+                }
+                Spacer()
+                Button("公式ページ") {
+                    if let url = URL(string: provider.url) { NSWorkspace.shared.open(url) }
+                }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+
+            if provider.incidents.isEmpty {
+                HStack(spacing: 6) {
+                    Circle().fill(Color.green).frame(width: 7, height: 7)
+                    Text("進行中のインシデントはありません").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("進行中のインシデント  \(provider.incidents.count)件")
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(.orange)
+                    ForEach(provider.incidents) { incident in
+                        Button {
+                            if let url = URL(string: incident.url) { NSWorkspace.shared.open(url) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Circle().fill(statusColor(incident.impact)).frame(width: 7, height: 7)
+                                    Text(incident.name).font(.system(size: 11, weight: .medium)).lineLimit(2)
+                                    Spacer()
+                                    Text(incidentStatusLabel(incident.status)).font(.system(size: 9)).foregroundStyle(.secondary)
+                                }
+                                if !incident.message.isEmpty {
+                                    Text(incident.message).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(3)
+                                }
+                                if incident.updated > 0 {
+                                    Text("更新 " + dateText(incident.updated)).font(.system(size: 9)).foregroundStyle(.tertiary)
+                                }
+                            }.contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("関連サービス").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                ForEach(provider.relevantComponents) { component in
+                    HStack(spacing: 7) {
+                        Circle().fill(statusColor(component.status)).frame(width: 7, height: 7)
+                        Text(component.name).font(.system(size: 10)).lineLimit(1)
+                        Spacer()
+                        Text(componentStatusLabel(component.status)).font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.primary.opacity(0.028), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(provider.hasIssue ? Color.orange.opacity(0.30) : .clear))
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "none", "operational": return .green
+        case "minor", "degraded_performance", "monitoring": return .yellow
+        case "major", "partial_outage", "identified", "investigating": return .orange
+        case "critical", "major_outage": return .red
+        default: return .secondary
+        }
+    }
+
+    private func statusLabel(_ indicator: String, fallback: String) -> String {
+        switch indicator {
+        case "none": return "正常稼働"
+        case "minor": return "一部で性能低下"
+        case "major": return "部分的な障害"
+        case "critical": return "重大な障害"
+        default: return fallback
+        }
+    }
+
+    private func componentStatusLabel(_ status: String) -> String {
+        switch status {
+        case "operational": return "正常"
+        case "degraded_performance": return "性能低下"
+        case "partial_outage": return "部分障害"
+        case "major_outage": return "重大障害"
+        case "under_maintenance": return "メンテナンス"
+        default: return status
+        }
+    }
+
+    private func incidentStatusLabel(_ status: String) -> String {
+        switch status {
+        case "investigating": return "調査中"
+        case "identified": return "原因特定"
+        case "monitoring": return "監視中"
+        default: return status
+        }
     }
 }
 
@@ -383,6 +651,7 @@ struct SessionRow: View {
     let popover = NSPopover()
     var timer: Timer?
     var pricingTimer: Timer?
+    var statusTimer: Timer?
     var previewWindow: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let pos = CommandLine.arguments.firstIndex(of: "--render"), CommandLine.arguments.count > pos + 2 {
@@ -391,12 +660,14 @@ struct SessionRow: View {
             if let data = try? Data(contentsOf: input), let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) {
                 store.snapshot = snapshot
                 if CommandLine.arguments.contains("--claude") { store.selected = "claude" }
+                if CommandLine.arguments.contains("--status") { store.page = "status"; store.refreshStatus() }
                 let view = NSHostingView(rootView: Panel(store: store))
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 680), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.contentView = view
                 view.frame = NSRect(x: 0, y: 0, width: 620, height: 680)
                 view.layoutSubtreeIfNeeded()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                let renderDelay = CommandLine.arguments.contains("--status") ? 3.0 : 0.6
+                DispatchQueue.main.asyncAfter(deadline: .now() + renderDelay) {
                     if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                         view.cacheDisplay(in: view.bounds, to: rep)
                         if let png = rep.representation(using: .png, properties: [:]) { try? png.write(to: output) }
@@ -423,12 +694,16 @@ struct SessionRow: View {
         statusItem = item
         store.onUpdate = { [weak self] in self?.updateStatus() }
         store.refresh()
+        store.refreshStatus()
         store.checkPrices()
         timer = Timer.scheduledTimer(withTimeInterval:30,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.store.refresh() }
         }
         pricingTimer = Timer.scheduledTimer(withTimeInterval:60 * 60,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.store.checkPrices() }
+        }
+        statusTimer = Timer.scheduledTimer(withTimeInterval:5 * 60,repeats:true) { [weak self] _ in
+            Task { @MainActor in self?.store.refreshStatus() }
         }
         if CommandLine.arguments.contains("--preview") {
             let window = NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:680),styleMask:[.titled,.closable],backing:.buffered,defer:false)
@@ -491,6 +766,7 @@ struct SessionRow: View {
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         pricingTimer?.invalidate()
+        statusTimer?.invalidate()
     }
 }
 
