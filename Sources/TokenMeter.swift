@@ -185,7 +185,6 @@ struct Panel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            pageTabs
             // A tab's minimum content height must never move the shared header.
             GeometryReader { geometry in
                 ZStack(alignment: .topLeading) {
@@ -218,6 +217,7 @@ struct Panel: View {
                 Text("TokenMeter").font(.system(size: 19, weight: .bold, design: .rounded))
                 Text("AIの利用状況を、ひと目で").font(.system(size: 11)).foregroundStyle(.secondary)
             }
+            pageTabs
             Spacer()
             if store.page == "usage" ? store.loading : store.statusLoading { ProgressView().controlSize(.small) }
             Button {
@@ -240,14 +240,12 @@ struct Panel: View {
     }
 
     private var pageTabs: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
             pageButton("usage", "TokenMeter", icon: "chart.bar.xaxis")
             pageButton("status", "Status", icon: "waveform.path.ecg")
         }
-        .padding(4)
+        .padding(3)
         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
-        .padding(.horizontal, 22)
-        .frame(height: 44, alignment: .top)
     }
 
     private var usageContent: some View {
@@ -386,21 +384,22 @@ struct Panel: View {
             store.page = id
             if id == "status", switched { store.refreshStatus() }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                Text(title).fontWeight(.semibold)
-                if id == "status", store.providerStatuses.contains(where: \.hasIssue) {
-                    Circle().fill(Color.orange).frame(width: 6, height: 6).accessibilityLabel("障害情報あり")
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(active ? Color.accentColor : Color.secondary)
+                .frame(width: 30, height: 30)
+                .background(active ? Color(nsColor: .controlBackgroundColor) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                .contentShape(RoundedRectangle(cornerRadius: 7))
+                .overlay(alignment: .topTrailing) {
+                    if id == "status", store.providerStatuses.contains(where: \.hasIssue) {
+                        Circle().fill(Color.orange).frame(width: 6, height: 6).padding(3)
+                    }
                 }
-            }
-            .font(.system(size: 12))
-            .foregroundStyle(active ? Color.primary : Color.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 7)
-            .background(active ? Color(nsColor: .controlBackgroundColor) : .clear, in: RoundedRectangle(cornerRadius: 7))
-            .contentShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
+        .help(title + "に切り替え")
+        .accessibilityLabel(title)
+        .accessibilityValue(id == "status" && store.providerStatuses.contains(where: \.hasIssue) ? "障害情報あり" : "")
         .accessibilityAddTraits(active ? .isSelected : [])
     }
     func sortButton(_ title: String, key: SessionSortKey, width: CGFloat) -> some View {
