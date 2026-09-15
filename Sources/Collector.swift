@@ -234,6 +234,7 @@ final class UsageCollector: @unchecked Sendable {
     let stateDirectory: URL
     let codexHome: URL
     let claudeHome: URL
+    let claudeAccountFile: URL
     let pricingURL: URL
     private let fileManager = FileManager.default
 
@@ -250,6 +251,10 @@ final class UsageCollector: @unchecked Sendable {
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
         self.claudeHome = claudeHome ?? URL(fileURLWithPath: environment["CLAUDE_CONFIG_DIR"] ??
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path)
+        // Explicit/custom profiles must never fall back to the default account.
+        self.claudeAccountFile = (claudeHome != nil || environment["CLAUDE_CONFIG_DIR"] != nil)
+            ? self.claudeHome.appendingPathComponent(".claude.json")
+            : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
         self.pricingURL = pricingURL ?? Bundle.main.url(forResource: "pricing", withExtension: "json") ??
             URL(fileURLWithPath: "Sources/pricing.json")
     }
@@ -602,7 +607,19 @@ final class UsageCollector: @unchecked Sendable {
         } else { detail = "Claude Codeからの最終通知。会話の応答時に更新されます" }
         return Quota(windows: windows, observed: observed, source: observed > 0 ? "Claude Code通知" : "未取得",
                      error: "", stale: now - observed > 600, detail: detail,
+                     accountID: claudeAccountID(),
                      bridgeInstalled: installed, linked: installed && !windows.isEmpty)
+    }
+
+    func claudeAccountID() -> String? {
+        guard let config = readObject(from: claudeAccountFile),
+              let account = object(config["oauthAccount"]) else { return nil }
+        for key in ["emailAddress", "accountUuid"] {
+            if let value = (account[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private func vector(_ usage: [String: Any], provider: String) -> TokenVector {

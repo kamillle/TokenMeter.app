@@ -479,7 +479,7 @@ struct Panel: View {
                       systemImage: q.stale && q.observed > 0 ? "clock.badge.exclamationmark" : "clock")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            if store.selected == "codex" {
+            Group {
                 HStack(spacing: 6) {
                     Text("アカウントID").foregroundStyle(.secondary)
                     Text(q.accountID ?? "未取得").lineLimit(1).textSelection(.enabled)

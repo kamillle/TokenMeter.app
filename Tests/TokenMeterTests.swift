@@ -23,6 +23,7 @@ struct TokenMeterTests {
         try test("利用枠の0・欠落・期限切れを区別する", quotaEdgeCases)
         try test("複数の利用枠を保持する", multipleBuckets)
         try test("CodexアカウントIDを取得・保持する", codexAccountID)
+        try test("ClaudeアカウントIDを読み取り変更・欠落を反映する", claudeAccountID)
         try test("公式ステータスと進行中インシデントを読む", providerStatusParsing)
         try test("連携状態を正しく判定する", providerLinkState)
         try test("Claude設定を保持して復元する", bridgePreservesSettings)
@@ -253,6 +254,30 @@ struct TokenMeterTests {
         try check(result.incidents[0].url == "https://status.example.com/incidents/active", "インシデントURLが不正")
         try check(result.relevantComponents.map(\.id) == ["codex", "files"], "関連項目または障害中の項目を表示しない")
         try check(result.updated > 0, "小数秒付き日時を読めない")
+    }
+
+    static func claudeAccountID() throws {
+        try temporary { root in
+            let c = collector(root: root)
+            let path = root.appendingPathComponent("claude/.claude.json")
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try check(c.claudeQuota().accountID == nil, "独立プロファイルで実アカウントを読んだ")
+            try json(["oauthAccount": ["emailAddress": " first@example.com ", "accountUuid": "account-1"]], to: path)
+            let original = try Data(contentsOf: path)
+            try check(c.claudeQuota().accountID == "first@example.com", "メールアドレスを優先しない")
+            let afterRead = try Data(contentsOf: path)
+            try check(afterRead == original, "アカウント設定を書き換えた")
+            try json(["oauthAccount": ["emailAddress": "next@example.com"]], to: path)
+            try check(c.claudeQuota().accountID == "next@example.com", "アカウント変更が反映されない")
+            try json(["oauthAccount": ["emailAddress": " ", "accountUuid": "account-2"]], to: path)
+            try check(c.claudeQuota().accountID == "account-2", "メール未設定時にUUIDを表示しない")
+            try json(["oauthAccount": ["emailAddress": 123]], to: path)
+            try check(c.claudeQuota().accountID == nil, "不正なIDを表示した")
+            try json([:], to: path)
+            try check(c.claudeQuota().accountID == nil, "ログアウト後も古いIDを表示した")
+            try Data("{".utf8).write(to: path)
+            try check(c.claudeQuota().accountID == nil, "不正JSONでIDを表示した")
+        }
     }
 
     static func providerLinkState() throws {
