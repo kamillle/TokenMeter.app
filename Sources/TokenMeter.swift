@@ -475,9 +475,10 @@ struct Panel: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("残り利用枠").font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Label(q.stale && q.observed > 0 ? "古い取得値 · " + dateText(q.observed) : q.source,
-                      systemImage: q.stale && q.observed > 0 ? "clock.badge.exclamationmark" : "clock")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                if q.stale && q.observed > 0 {
+                    Label("古い取得値 · " + dateText(q.observed), systemImage: "clock.badge.exclamationmark")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
             }
             Group {
                 HStack(spacing: 6) {
