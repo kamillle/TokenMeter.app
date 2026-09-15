@@ -41,10 +41,20 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     @Published var days = 30
     @Published var sessionSort: SessionSort?
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
+    @Published var pricingEnabled = true
+    @Published var pricingChecking = false
+    @Published var pricingStatus = PricingCheckStatus()
     var onUpdate: (() -> Void)?
-    let stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/UsageBar")
     let collector = UsageCollector()
     let bridgeManager = BridgeManager()
+    let pricingUpdater = OfficialPricingUpdater()
+    init() {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "dailyPricingCheckEnabled") != nil {
+            pricingEnabled = defaults.bool(forKey: "dailyPricingCheckEnabled")
+        }
+        pricingStatus = pricingUpdater.readStatus()
+    }
     func quota(_ provider: String) -> Quota {
         (provider == "codex" ? snapshot?.codex : snapshot?.claude) ?? .empty
     }
@@ -101,13 +111,36 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
             loginEnabled = SMAppService.mainApp.status == .enabled
         } catch { notice = "ログイン項目を設定できません。アプリをApplicationsフォルダに置いてから再度お試しください" }
     }
-    func editPrices() {
-        let target = stateDirectory.appendingPathComponent("pricing.json")
-        if !FileManager.default.fileExists(atPath: target.path), let original = Bundle.main.url(forResource: "pricing", withExtension: "json") {
-            try? FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
-            try? FileManager.default.copyItem(at: original, to: target)
+    func togglePricingUpdates() {
+        pricingEnabled.toggle()
+        UserDefaults.standard.set(pricingEnabled, forKey: "dailyPricingCheckEnabled")
+        if pricingEnabled { checkPrices() }
+    }
+    func checkPrices(force: Bool = false) {
+        guard !pricingChecking, force || pricingEnabled else { return }
+        if !force && !pricingUpdater.isDue() { return }
+        pricingChecking = true
+        let updater = pricingUpdater
+        Task {
+            let outcome = await updater.check(force: force)
+            await MainActor.run {
+                self.pricingChecking = false
+                switch outcome {
+                case .skipped:
+                    self.pricingStatus = updater.readStatus()
+                case .unchanged(let status):
+                    self.pricingStatus = status
+                    if force { self.notice = status.message }
+                case .updated(let status, _):
+                    self.pricingStatus = status
+                    self.notice = status.message
+                    self.refresh()
+                case .failed(let status):
+                    self.pricingStatus = status
+                    if force { self.notice = status.message }
+                }
+            }
         }
-        NSWorkspace.shared.open(target)
     }
 }
 
@@ -126,11 +159,10 @@ struct Panel: View {
                 Button { store.refresh(force: true) } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).disabled(store.loading).help("使用状況を更新")
                 Menu {
                     Button("ログイン時に起動 " + (store.loginEnabled ? "✓" : "")) { store.toggleLogin() }
-                    Button("参考単価を編集…") { store.editPrices() }
+                    Button("参考単価を毎日確認 " + (store.pricingEnabled ? "✓" : "")) { store.togglePricingUpdates() }
+                    Button(store.pricingChecking ? "参考単価を確認中…" : "参考単価を今すぐ確認") { store.checkPrices(force: true) }
+                        .disabled(store.pricingChecking)
                     Button("Claude連携を" + (store.quota("claude").bridgeInstalled == true ? "解除" : "有効にする")) { store.bridge(remove: store.quota("claude").bridgeInstalled == true) }
-                    Divider()
-                    Button("OpenAIの公式料金表") { NSWorkspace.shared.open(URL(string:"https://developers.openai.com/api/docs/pricing")!) }
-                    Button("Claudeの公式料金表") { NSWorkspace.shared.open(URL(string:"https://platform.claude.com/docs/en/about-claude/pricing")!) }
                     Divider()
                     Button("UsageBarを終了") { NSApplication.shared.terminate(nil) }
                 } label: { Image(systemName: "gearshape") }.menuStyle(.borderlessButton).frame(width: 24)
@@ -206,6 +238,11 @@ struct Panel: View {
                     Text("このMacのログ · 直近30日更新分")
                     Spacer()
                     Text("更新 " + dateText(store.snapshot?.updated ?? 0))
+                }.font(.system(size:9)).foregroundStyle(.tertiary)
+                HStack {
+                    Text("参考単価: " + store.pricingStatus.message)
+                    Spacer()
+                    if store.pricingStatus.lastSuccess > 0 { Text("確認 " + dateText(store.pricingStatus.lastSuccess)) }
                 }.font(.system(size:9)).foregroundStyle(.tertiary)
                 if let errors = store.snapshot?.errors, !errors.isEmpty { Text(errors.joined(separator:" / ")).font(.caption2).foregroundStyle(.orange) }
             }.padding(.horizontal,22).padding(.vertical,14)
@@ -345,6 +382,7 @@ struct SessionRow: View {
     var statusItem: NSStatusItem?
     let popover = NSPopover()
     var timer: Timer?
+    var pricingTimer: Timer?
     var previewWindow: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let pos = CommandLine.arguments.firstIndex(of: "--render"), CommandLine.arguments.count > pos + 2 {
@@ -385,8 +423,12 @@ struct SessionRow: View {
         statusItem = item
         store.onUpdate = { [weak self] in self?.updateStatus() }
         store.refresh()
+        store.checkPrices()
         timer = Timer.scheduledTimer(withTimeInterval:30,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.store.refresh() }
+        }
+        pricingTimer = Timer.scheduledTimer(withTimeInterval:60 * 60,repeats:true) { [weak self] _ in
+            Task { @MainActor in self?.store.checkPrices() }
         }
         if CommandLine.arguments.contains("--preview") {
             let window = NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:680),styleMask:[.titled,.closable],backing:.buffered,defer:false)
@@ -448,6 +490,7 @@ struct SessionRow: View {
     }
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        pricingTimer?.invalidate()
     }
 }
 

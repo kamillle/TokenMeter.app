@@ -27,6 +27,9 @@ struct UsageBarTests {
         try test("旧ClaudeブリッジをSwift版へ移行する", bridgeMigratesLegacyHelper)
         try test("不正なClaude設定を上書きしない", bridgeRejectsInvalidSettings)
         try test("セッションを入出力・参考料金で並び替える", sessionSorting)
+        try test("OpenAI公式MarkdownのStandard単価を読む", openAIPricingMarkdown)
+        try test("Anthropic公式Markdownのキャッシュ単価を読む", anthropicPricingMarkdown)
+        try test("自動単価よりユーザー単価を優先する", pricingPrecedence)
         print("\(passed) tests passed")
     }
 
@@ -283,6 +286,59 @@ struct UsageBarTests {
         try check(descending == SessionSort(key: .input, direction: .descending), "1回目のクリックで降順にならない")
         try check(ascending == SessionSort(key: .input, direction: .ascending), "2回目のクリックで昇順にならない")
         try check(cleared == nil, "3回目のクリックで並び替えを解除しない")
+    }
+
+    static func openAIPricingMarkdown() throws {
+        let markdown = """
+        ### Standard pricing data
+        | Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |
+        | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+        | gpt-6-astra | $10.00 | $1.00 | $12.50 | $50.00 | $20.00 | $2.00 | $25.00 | $75.00 |
+        ### Batch pricing data
+        | gpt-6-astra | $5.00 | $0.50 | $6.25 | $25.00 | $10.00 | $1.00 | $12.50 | $37.50 |
+        ### Grouped Pricing Table data
+        | Category | Model | Input | Cached input | Output |
+        | Codex | gpt-5.3-codex | $1.75 | $0.175 | $14.00 |
+        """
+        let rates = OfficialPricingUpdater.parseOpenAI(markdown)
+        try check(rates["gpt-6-astra"] == PriceRate(input: 10, cached: 1, write: 12.5, write1h: nil, output: 50), "Batch単価を選んだ")
+        try check(rates["gpt-5.3-codex"] == PriceRate(input: 1.75, cached: 0.175, write: 1.75, write1h: nil, output: 14), "Codex単価を読めない")
+    }
+
+    static func anthropicPricingMarkdown() throws {
+        let markdown = """
+        | Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
+        | --- | --- | --- | --- | --- | --- |
+        | Claude Sonnet 5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.20 / MTok | $10 / MTok |
+        | Claude Haiku 4.5 | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |
+        """
+        let rates = OfficialPricingUpdater.parseAnthropic(markdown)
+        try check(rates["claude-sonnet-5"] == PriceRate(input: 2, cached: 0.2, write: 2.5, write1h: 4, output: 10), "Sonnet単価を読めない")
+        try check(rates["claude-haiku-4-5"] == PriceRate(input: 1, cached: 0.1, write: 1.25, write1h: 2, output: 5), "小数バージョンIDを変換できない")
+    }
+
+    static func pricingPrecedence() throws {
+        try temporary { root in
+            let state = root.appendingPathComponent("state")
+            let sessions = root.appendingPathComponent("codex/sessions")
+            try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+            let base = root.appendingPathComponent("base-pricing.json")
+            let rate: (Double) -> [String: Any] = { value in
+                ["input": value, "cached": value, "write": value, "output": value]
+            }
+            try json(["verified": "2026-01-01", "models": ["gpt-test": rate(1)]], to: base)
+            try json(["verified": "2026-02-01", "models": ["gpt-test": rate(2)]], to: state.appendingPathComponent("official-pricing.json"))
+            try json(["models": ["gpt-test": rate(3)]], to: state.appendingPathComponent("pricing.json"))
+            let context = try JSONSerialization.data(withJSONObject: ["type": "turn_context", "payload": ["model": "gpt-test"]]) + Data([0x0A])
+            let usageLine = try JSONSerialization.data(withJSONObject: event(["input_tokens": 1_000_000, "output_tokens": 0, "cached_input_tokens": 0])) + Data([0x0A])
+            try (context + usageLine).write(to: sessions.appendingPathComponent("pricing.jsonl"))
+            let collector = UsageCollector(stateDirectory: state, codexHome: root.appendingPathComponent("codex"),
+                                           claudeHome: root.appendingPathComponent("claude"), pricingURL: base)
+            let snapshot = try collector.collect(live: false)
+            try close(snapshot.sessions.first?.cost, 3, "ユーザー単価が最優先にならない")
+            try check(snapshot.pricingDate == "2026-02-01", "自動単価の確認日を表示しない")
+        }
     }
 
     static func json(_ object: [String: Any], to url: URL) throws {

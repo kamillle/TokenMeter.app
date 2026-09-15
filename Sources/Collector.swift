@@ -292,7 +292,12 @@ final class UsageCollector: @unchecked Sendable {
         }
 
         try atomicWrite(SessionCache(version: Self.cacheVersion, files: files), to: cacheURL)
-        var prices = readCodable(PricingFile.self, from: pricingURL)?.models ?? [:]
+        let bundledPricing = readCodable(PricingFile.self, from: pricingURL)
+        var prices = bundledPricing?.models ?? [:]
+        let officialPricing = readCodable(PricingFile.self, from: stateDirectory.appendingPathComponent("official-pricing.json"))
+        if let official = officialPricing?.models {
+            prices.merge(official) { _, new in new }
+        }
         if let overrides = readCodable(PricingFile.self, from: stateDirectory.appendingPathComponent("pricing.json"))?.models {
             prices.merge(overrides) { _, new in new }
         }
@@ -302,7 +307,7 @@ final class UsageCollector: @unchecked Sendable {
         return Snapshot(updated: now, sessions: summarize(states, prices: prices, titles: titles),
                         codex: codexQuota(states: states, live: live, force: force),
                         claude: claudeQuota(), errors: errors.sorted(),
-                        pricingDate: readCodable(PricingFile.self, from: pricingURL)?.verified ?? "",
+                        pricingDate: officialPricing?.verified ?? bundledPricing?.verified ?? "",
                         scope: "このMacの直近30日以内に更新されたセッション · 数値は各セッションの累計")
     }
 
