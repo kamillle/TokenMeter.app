@@ -795,7 +795,7 @@ struct SessionRow: View {
             }
         }
         NSApp.setActivationPolicy(CommandLine.arguments.contains("--preview") ? .regular : .accessory)
-        // Keep the legacy bundle identity so settings and duplicate-instance detection survive the rename.
+        // Detect duplicate instances using the application bundle identity.
         if NSRunningApplication.runningApplications(withBundleIdentifier:"local.tokenmeter.TokenMeter").filter({ $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }).count > 0 { NSApp.terminate(nil); return }
         popover.behavior = .transient
         popover.contentSize = NSSize(width:620,height:680)

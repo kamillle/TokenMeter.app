@@ -51,7 +51,7 @@ Claudeの枠はPro/Maxの応答後に通知されます。API・プロキシ等�
 
 ## UsageBarからの名前変更
 
-アプリ名はTokenMeterです。旧版を終了してから `TokenMeter.app` を開いてください。設定・キャッシュ・ユーザー単価を引き継ぐため、保存先 `~/Library/Application Support/UsageBar/` と内部のBundle ID `local.tokenmeter.TokenMeter` は維持しています。Claude連携が有効な場合、起動時に旧ヘルパーを `TokenMeterClaudeBridge` へ更新し、元のstatusLineの復元情報を保持します。
+アプリ名はTokenMeterです。旧版を終了してから `TokenMeter.app` を開いてください。設定・キャッシュ・ユーザー単価を引き継ぐため、保存先 `~/Library/Application Support/UsageBar/` は維持しています。Bundle IDは `local.tokenmeter.TokenMeter` です。旧版から更新した場合、ログイン時の自動起動は再設定が必要になることがあります。Claude連携が有効な場合、起動時に旧ヘルパーを `TokenMeterClaudeBridge` へ更新し、元のstatusLineの復元情報を保持します。
 
 ビルドキャッシュは `TOKENMETER_BUILD_DIR` で指定できます。従来の `USAGEBAR_BUILD_DIR` も使用できます。
 
