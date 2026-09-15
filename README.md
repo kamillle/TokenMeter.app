@@ -66,6 +66,18 @@ bash build.sh
 bash Tests/run.sh
 ```
 
+ビルド、署名検証、起動中のTokenMeterの終了、`/Applications/TokenMeter.app`への配置、再起動をまとめて行う場合:
+
+```sh
+bash install.sh
+```
+
+別の場所へインストールする場合は、配置先ディレクトリを指定できます。
+
+```sh
+TOKENMETER_INSTALL_DIR="$HOME/Applications" bash install.sh
+```
+
 ローカルのad-hoc署名です。App Store配布用の署名・公証はしていません。アプリを移動するときは一度終了し、`TokenMeter.app` 全体を移してください。
 
 ## 出典
