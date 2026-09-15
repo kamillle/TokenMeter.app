@@ -91,6 +91,8 @@ TOKENMETER_INSTALL_DIR="$HOME/Applications" bash install.sh
 
 ## ロゴ
 
+アプリアイコンは、残り利用枠のメーターとトークンを組み合わせた専用デザインです。原画は `Sources/Assets/app-icon.png`、アセットの説明は `Sources/Assets/app-icon-prompt.md` に記載しています。`build.sh` が16〜1024pxの各解像度を生成し、`AppIcon.icns` としてアプリへ同梱します。
+
 ユーザー指定のPNGをそのままアプリに同梱しています。メニューバーではChatGPTの黒いロゴをmacOSの明暗に合わせて表示し、Claudeは指定画像の色を維持します。
 
 - [ChatGPTロゴ（Wikimedia）](https://thumb.wikimedia.org/wikipedia/commons/thumb/e/ef/ChatGPT-Logo.svg/960px-ChatGPT-Logo.svg.png)

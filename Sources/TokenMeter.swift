@@ -32,6 +32,15 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     return image
 }
 
+func appIconImage(size: CGFloat = 28) -> NSImage {
+    guard let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+          let image = NSImage(contentsOf: url) else {
+        return NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "TokenMeter") ?? NSImage()
+    }
+    image.size = NSSize(width: size, height: size)
+    return image
+}
+
 @MainActor final class Store: ObservableObject {
     @Published var snapshot: Snapshot?
     @Published var selected = "codex"
@@ -210,7 +219,11 @@ struct Panel: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "chart.bar.xaxis").font(.system(size: 21, weight: .semibold)).foregroundStyle(providerColor(store.selected))
+            Image(nsImage: appIconImage())
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 28, height: 28)
+                .accessibilityLabel("TokenMeter")
             VStack(alignment: .leading, spacing: 2) {
                 Text("TokenMeter").font(.system(size: 19, weight: .bold, design: .rounded))
                 Text("AIの利用状況を、ひと目で").font(.system(size: 11)).foregroundStyle(.secondary)

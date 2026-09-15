@@ -13,6 +13,13 @@ swiftc -O -parse-as-library -target arm64-apple-macosx14.0 -swift-version 5 -mod
 rm -f "$APP/Contents/Resources/collector.py" "$APP/Contents/Resources/claude_bridge.py" "$APP/Contents/Resources/bridge_setup.py"
 cp "$ROOT/Sources/pricing.json" "$APP/Contents/Resources/"
 cp "$ROOT/Sources/Assets/chatgpt-logo.png" "$ROOT/Sources/Assets/claude-logo.png" "$APP/Contents/Resources/"
+ICONSET="$BUILD_DIR/AppIcon.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$ROOT/Sources/Assets/app-icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  sips -z "$((size * 2))" "$((size * 2))" "$ROOT/Sources/Assets/app-icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -21,6 +28,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.tokenmeter.TokenMeter</string>
 <key>CFBundleName</key><string>TokenMeter</string>
 <key>CFBundleDisplayName</key><string>TokenMeter</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.4.0</string>
 <key>CFBundleVersion</key><string>9</string>
