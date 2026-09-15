@@ -181,7 +181,8 @@ func appIconImage(size: CGFloat = 28) -> NSImage {
 
 struct Panel: View {
     @ObservedObject var store: Store
-    @State private var showingQuotaInfo = false
+    @State private var hoveringSummaryInfo = false
+    @State private var showingSummaryInfo = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -352,15 +353,38 @@ struct Panel: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline, spacing: 0) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("表示中の累計").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    HStack(spacing: 5) {
+                        Text("表示中の累計")
+                        Button { showingSummaryInfo.toggle() } label: {
+                            Image(systemName: "info.circle")
+                                .frame(width: 20, height: 16)
+                                .contentShape(Rectangle())
+                        }
+                            .buttonStyle(.plain)
+                            .onHover { hoveringSummaryInfo = $0 }
+                            .accessibilityLabel("トークン数と参考料金の説明")
+                            .overlay(alignment: .bottomLeading) {
+                                if hoveringSummaryInfo || showingSummaryInfo {
+                                    Text("API標準・短コンテキストの概算。サブスクの追加請求ではありません。入力はキャッシュ込み。Fast／Priority・長文割増・地域・ツール料金等は対象外。")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.primary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .padding(12)
+                                        .frame(width: 330, alignment: .leading)
+                                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.15)))
+                                        .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+                                        .offset(y: -24)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                    }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     Text("\(store.sessions.count) セッション").font(.system(size: 12, weight: .medium))
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 summaryMetric("入力", compact(store.sessions.reduce(0) { $0 + $1.input }))
                 summaryMetric("出力", compact(store.sessions.reduce(0) { $0 + $1.output }))
                 summaryMetric("参考 USD", money(store.sessions.reduce(0) { $0 + $1.knownCost }) + (store.sessions.contains { $0.cost == nil } ? " + 未算定" : ""))
             }
-            Text("API標準・短コンテキストの概算。サブスクの追加請求ではありません。入力はキャッシュ込み。Fast／Priority・長文割増・地域・ツール料金等は対象外。")
-                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let errors = store.snapshot?.errors, !errors.isEmpty {
                 Text(errors.joined(separator: " / ")).font(.system(size: 11)).foregroundStyle(.orange).lineLimit(2)
                     .help(errors.joined(separator: "\n"))
@@ -369,6 +393,7 @@ struct Panel: View {
         .padding(.horizontal, 22).padding(.vertical, 12)
         .background(Color.primary.opacity(0.035))
         .overlay(alignment: .top) { Divider() }
+        .zIndex(1)
     }
 
     private func summaryMetric(_ title: String, _ value: String) -> some View {
@@ -449,17 +474,6 @@ struct Panel: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("残り利用枠").font(.system(size: 13, weight: .semibold))
-                Button { showingQuotaInfo.toggle() } label: {
-                    Image(systemName: "info.circle").foregroundStyle(.secondary)
-                }.buttonStyle(.plain).accessibilityLabel("利用枠の取得情報")
-                    .popover(isPresented: $showingQuotaInfo) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("利用枠の取得情報").font(.system(size: 13, weight: .semibold))
-                            Text(q.detail)
-                            Text("取得元: " + q.source)
-                            Text("最終取得: " + dateText(q.observed))
-                        }.font(.system(size: 12)).padding(16).frame(width: 320, alignment: .leading)
-                    }
                 Spacer()
                 Label(q.stale && q.observed > 0 ? "古い取得値 · " + dateText(q.observed) : q.source,
                       systemImage: q.stale && q.observed > 0 ? "clock.badge.exclamationmark" : "clock")
