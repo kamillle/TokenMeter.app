@@ -212,7 +212,7 @@ struct Panel: View {
         HStack(spacing: 10) {
             Image(systemName: "chart.bar.xaxis").font(.system(size: 21, weight: .semibold)).foregroundStyle(providerColor(store.selected))
             VStack(alignment: .leading, spacing: 2) {
-                Text("UsageBar").font(.system(size: 19, weight: .bold, design: .rounded))
+                Text("TokenMeter").font(.system(size: 19, weight: .bold, design: .rounded))
                 Text("AIの利用状況を、ひと目で").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
@@ -231,7 +231,7 @@ struct Panel: View {
                     .disabled(store.pricingChecking)
                 Button("Claude連携を" + (store.quota("claude").bridgeInstalled == true ? "解除" : "有効にする")) { store.bridge(remove: store.quota("claude").bridgeInstalled == true) }
                 Divider()
-                Button("UsageBarを終了") { NSApplication.shared.terminate(nil) }
+                Button("TokenMeterを終了") { NSApplication.shared.terminate(nil) }
             } label: { Image(systemName: "gearshape") }.menuStyle(.borderlessButton).frame(width: 24)
         }
         .padding(.horizontal, 22)
@@ -241,7 +241,7 @@ struct Panel: View {
 
     private var pageTabs: some View {
         HStack(spacing: 6) {
-            pageButton("usage", "UsageBar", icon: "chart.bar.xaxis")
+            pageButton("usage", "TokenMeter", icon: "chart.bar.xaxis")
             pageButton("status", "Status", icon: "waveform.path.ecg")
         }
         .padding(4)
@@ -796,18 +796,19 @@ struct SessionRow: View {
             }
         }
         NSApp.setActivationPolicy(CommandLine.arguments.contains("--preview") ? .regular : .accessory)
+        // Keep the legacy bundle identity so settings and duplicate-instance detection survive the rename.
         if NSRunningApplication.runningApplications(withBundleIdentifier:"local.tokenmeter.TokenMeter").filter({ $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }).count > 0 { NSApp.terminate(nil); return }
         popover.behavior = .transient
         popover.contentSize = NSSize(width:620,height:680)
         popover.contentViewController = NSHostingController(rootView:Panel(store:store))
         let item = NSStatusBar.system.statusItem(withLength:NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "UsageBar")
+            button.image = NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "TokenMeter")
             button.image?.isTemplate = true
             button.imagePosition = .imageOnly
             button.target = self
             button.action = #selector(togglePopover)
-            button.setAccessibilityLabel("UsageBar")
+            button.setAccessibilityLabel("TokenMeter")
         }
         statusItem = item
         store.onUpdate = { [weak self] in self?.updateStatus() }
@@ -821,7 +822,7 @@ struct SessionRow: View {
         }
         if CommandLine.arguments.contains("--preview") {
             let window = NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:680),styleMask:[.titled,.closable],backing:.buffered,defer:false)
-            window.title = "UsageBar"; window.contentView = NSHostingView(rootView:Panel(store:store)); window.center(); window.makeKeyAndOrderFront(nil)
+            window.title = "TokenMeter"; window.contentView = NSHostingView(rootView:Panel(store:store)); window.center(); window.makeKeyAndOrderFront(nil)
             previewWindow = window; NSApp.activate(ignoringOtherApps:true)
         }
     }
@@ -829,12 +830,12 @@ struct SessionRow: View {
         guard let button = statusItem?.button else { return }
         let providers = ["codex", "claude"].filter { store.isLinked($0) }
         guard let first = providers.first else {
-            button.image = NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "UsageBar")
+            button.image = NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "TokenMeter")
             button.image?.isTemplate = true
             button.imagePosition = .imageOnly
             button.attributedTitle = NSAttributedString(string: "")
             button.toolTip = "連携中のアカウントはありません\nクリックして設定を開く"
-            button.setAccessibilityLabel("UsageBar · 連携中のアカウントなし")
+            button.setAccessibilityLabel("TokenMeter · 連携中のアカウントなし")
             return
         }
 
@@ -883,7 +884,7 @@ struct SessionRow: View {
     }
 }
 
-@main struct UsageBarMain {
+@main struct TokenMeterMain {
     @MainActor static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()

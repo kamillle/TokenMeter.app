@@ -7,7 +7,7 @@ enum TestFailure: Error, CustomStringConvertible {
 }
 
 @main
-struct UsageBarTests {
+struct TokenMeterTests {
     static var passed = 0
 
     static func main() throws {
@@ -27,6 +27,7 @@ struct UsageBarTests {
         try test("連携状態を正しく判定する", providerLinkState)
         try test("Claude設定を保持して復元する", bridgePreservesSettings)
         try test("旧ClaudeブリッジをSwift版へ移行する", bridgeMigratesLegacyHelper)
+        try test("旧名のSwift連携を更新して元の設定を復元する", bridgeMigratesRenamedHelper)
         try test("不正なClaude設定を上書きしない", bridgeRejectsInvalidSettings)
         try test("セッションを入出力・参考料金で並び替える", sessionSorting)
         try test("OpenAI公式MarkdownのStandard単価を読む", openAIPricingMarkdown)
@@ -54,7 +55,7 @@ struct UsageBarTests {
     }
 
     static func temporary(_ body: (URL) throws -> Void) throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("UsageBarTests-\(UUID().uuidString)")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("TokenMeterTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try body(root)
@@ -298,7 +299,7 @@ struct UsageBarTests {
 
     static func bridgeMigratesLegacyHelper() throws {
         try temporary { root in
-            let state = root.appendingPathComponent("state"), claude = root.appendingPathComponent("claude")
+            let state = root.appendingPathComponent("UsageBar"), claude = root.appendingPathComponent("claude")
             try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
             let helper = root.appendingPathComponent("helper"); try Data("swift-helper".utf8).write(to: helper)
@@ -309,9 +310,45 @@ struct UsageBarTests {
             manager.migrateLegacyBridgeIfNeeded()
             let migrated = try readJSON(claude.appendingPathComponent("settings.json"))
             let command = (migrated["statusLine"] as? [String: Any])?["command"] as? String ?? ""
-            try check(command.contains("UsageBarClaudeBridge") && !command.contains("python3"), "Swiftヘルパーへ移行しない")
-            let installed = try Data(contentsOf: state.appendingPathComponent("UsageBarClaudeBridge"))
+            try check(command.contains("TokenMeterClaudeBridge") && !command.contains("python3"), "Swiftヘルパーへ移行しない")
+            let installed = try Data(contentsOf: state.appendingPathComponent("TokenMeterClaudeBridge"))
             try check(installed == Data("swift-helper".utf8), "ヘルパーを更新しない")
+        }
+    }
+
+    static func bridgeMigratesRenamedHelper() throws {
+        try temporary { root in
+            let state = root.appendingPathComponent("UsageBar"), claude = root.appendingPathComponent("claude")
+            try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+            let helper = root.appendingPathComponent("helper")
+            try Data("new-helper".utf8).write(to: helper)
+            let original: [String: Any] = ["type": "command", "command": "cat", "padding": 3]
+            let configURL = state.appendingPathComponent("bridge-config.json")
+            let settingsURL = claude.appendingPathComponent("settings.json")
+            try json(["installed": true, "original": original], to: configURL)
+            try json(["statusLine": ["type": "command", "command": "'\(state.path)/UsageBarClaudeBridge'", "padding": 3],
+                      "env": ["DUMMY": "retained"]], to: settingsURL)
+            let manager = BridgeManager(stateDirectory: state, claudeDirectory: claude, helperSource: helper)
+            manager.migrateLegacyBridgeIfNeeded()
+            let migrated = try readJSON(settingsURL)
+            let command = (migrated["statusLine"] as? [String: Any])?["command"] as? String ?? ""
+            try check(command.contains("TokenMeterClaudeBridge") && !command.contains("UsageBarClaudeBridge"), "旧名のヘルパーを更新しない")
+            let installed = try Data(contentsOf: state.appendingPathComponent("TokenMeterClaudeBridge"))
+            try check(installed == Data("new-helper".utf8), "新ヘルパーを配置しない")
+            _ = try manager.setup(remove: true)
+            let restored = try readJSON(settingsURL)
+            try check(NSDictionary(dictionary: restored["statusLine"] as? [String: Any] ?? [:]).isEqual(to: original), "旧版の元コマンドを復元しない")
+            try check((restored["env"] as? [String: String])?["DUMMY"] == "retained", "無関係な設定を変更した")
+            // A later user edit must survive migration and removal.
+            try json(["installed": true, "original": original], to: configURL)
+            let changed: [String: Any] = ["statusLine": ["type": "command", "command": "echo user-edited"]]
+            try json(changed, to: settingsURL)
+            let nextManager = BridgeManager(stateDirectory: state, claudeDirectory: claude, helperSource: helper)
+            nextManager.migrateLegacyBridgeIfNeeded()
+            _ = try nextManager.setup(remove: true)
+            let untouched = try readJSON(settingsURL)
+            try check(NSDictionary(dictionary: untouched).isEqual(to: changed), "後から変更されたコマンドを上書きした")
         }
     }
 

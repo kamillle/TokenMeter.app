@@ -150,7 +150,7 @@ final class ProviderStatusService: @unchecked Sendable {
         guard let url = URL(string: value) else { throw ProviderStatusError.invalidResponse }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
-        request.setValue("UsageBar/1.3", forHTTPHeaderField: "User-Agent")
+        request.setValue("TokenMeter/1.3", forHTTPHeaderField: "User-Agent")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProviderStatusError.invalidResponse }

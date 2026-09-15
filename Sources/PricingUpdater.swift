@@ -190,7 +190,7 @@ final class OfficialPricingUpdater: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.timeoutInterval = 25
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("UsageBar/1.2", forHTTPHeaderField: "User-Agent")
+        request.setValue("TokenMeter/1.2", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               let text = String(data: data, encoding: .utf8), !text.isEmpty else {

@@ -1,6 +1,6 @@
-# UsageBar 開発ガイド
+# TokenMeter 開発ガイド
 
-このファイルはUsageBarプロジェクト全体に適用する。ユーザーの明示的な指示を優先し、通常の実装・修正・検証は依頼された範囲で進める。
+このファイルはTokenMeterプロジェクト全体に適用する。ユーザーの明示的な指示を優先し、通常の実装・修正・検証は依頼された範囲で進める。
 
 ## 目的と実行環境
 
@@ -14,18 +14,24 @@
 
 | ファイル | 役割 |
 | --- | --- |
-| `Sources/UsageBar.swift` | メニューバー、詳細画面、集計の非同期更新、更新タイマー、自動起動設定 |
+| `Sources/TokenMeter.swift` | メニューバー、詳細画面、集計の非同期更新、更新タイマー、自動起動設定 |
 | `Sources/Collector.swift` | JSONLログの差分読み取り、重複排除、モデル別集計、料金換算、利用枠取得 |
 | `Sources/pricing.json` | 同梱するモデル単価、換算条件、確認日と公式出典 |
 | `Sources/ClaudeBridge.swift` | ClaudeのstatusLine通知から使用率と取得時刻を保存し、既存コマンドへ入力を渡すSwift製ヘルパー |
 | `Sources/BridgeManager.swift` | Claude連携の有効化・解除、旧Python連携からの移行、変更前のstatusLine項目の保存 |
 | `Sources/Assets/` | ユーザー指定のChatGPT／ClaudeロゴPNG |
-| `Tests/UsageBarTests.swift` | 集計・料金・ログ読み取り・連携設定の回帰テスト |
+| `Tests/TokenMeterTests.swift` | 集計・料金・ログ読み取り・連携設定の回帰テスト |
 | `build.sh` | Swiftコンパイル、リソース同梱、Info.plist生成、ad-hoc署名 |
 | `README.md` | 利用方法、集計範囲、制限、ビルド方法、出典 |
-| `UsageBar.app/` | 生成されたアプリ。直接編集せず、ソースとbuild.shから再生成する |
+| `TokenMeter.app/` | 生成されたアプリ。直接編集せず、ソースとbuild.shから再生成する |
 
 `Info.plist` のバージョンや同梱リソースを変える場合も `build.sh` を修正する。新しいファイルを追加したら、アプリへの同梱漏れを確認する。
+
+## 旧名との互換性
+
+- 製品名・成果物名はTokenMeter。既存ユーザーの設定とデータを引き継ぐため、保存先 `Library/Application Support/UsageBar` とBundle ID `local.tokenmeter.TokenMeter` は維持する。
+- 旧 `UsageBarClaudeBridge`／Pythonブリッジを認識し、起動時に `TokenMeterClaudeBridge` へ更新する。保存済みの元のstatusLineを上書きしない。
+- `TOKENMETER_BUILD_DIR`／`TOKENMETER_STATE_DIR` を優先し、旧 `USAGEBAR_BUILD_DIR`／`USAGEBAR_STATE_DIR` も互換入力として認識する。
 
 ## データ取得と集計の約束
 
@@ -56,7 +62,7 @@
 - 会話本文や認証情報をキャッシュ・ログ・テスト出力に保存しない。セッションデータを外部に送信しない。Codexへの接続は利用枠の読み取りに限定し、モデル実行、購入、リセットを伴わせない。
 - Claude連携で変更するのは `settings.json` の `statusLine` 項目。既存表示と他の設定を維持し、不正なJSONを空の設定で上書きしない。
 - 解除時は変更前の項目を復元する。ただしユーザーが後から設定した別のstatusLineを上書きしない。変更前の保存は必要な項目だけとし、認証情報を含み得る設定ファイル全体を複製しない。
-- `UsageBarClaudeBridge` は有効化時に実行時ディレクトリへコピーされる。アプリ起動時に旧Python版や設置済みコピーを必要に応じて更新する。連携修正を実環境へ反映するときはこの点を確認する。
+- `TokenMeterClaudeBridge` は有効化時に実行時ディレクトリへコピーされる。アプリ起動時に旧Python版や設置済みコピーを必要に応じて更新する。連携修正を実環境へ反映するときはこの点を確認する。
 - Swift製ブリッジのstdinはデータとして扱う。シェルで実行するのは既に設定されたユーザーコマンドだけとし、通知内容をコマンドに組み込まない。
 - ロゴはユーザー指定の `chatgpt-logo.png`／`claude-logo.png` を使う。別アプリのアイコンや描き直した図形へ戻さない。ChatGPTはmacOSの明暗に合わせたテンプレート表示、Claudeは元画像の色を維持する。
 
@@ -66,23 +72,23 @@
 
 ```sh
 bash build.sh
-codesign --verify --deep --strict UsageBar.app
+codesign --verify --deep --strict TokenMeter.app
 bash Tests/run.sh
 ```
 
 - 集計・料金・連携設定の変更では、関連する回帰ケースを追加・更新し、テストを実行する。特に累計の重複、分岐、キャッシュ、未知モデル、部分行、取得値の欠落、既存設定の復元を確認する。
-- Swift、同梱リソース、ビルド設定など実行内容に関わるコードを変更したら、ビルドと署名検証を行い、検証後に常駐中のUsageBarを再起動して変更を反映する。文書だけの修正では、アプリの再ビルド・再起動は不要。
+- Swift、同梱リソース、ビルド設定など実行内容に関わるコードを変更したら、ビルドと署名検証を行い、検証後に常駐中のTokenMeterを再起動して変更を反映する。文書だけの修正では、アプリの再ビルド・再起動は不要。
 - 作業用データは `work/` または一時ディレクトリに置く。テストでは匿名化・合成したログと一時的な設定先を使い、ユーザーの認証や設定を必要なく変更しない。
 - 集計テストでは `UsageCollector` に一時的なstate、Codex、Claudeディレクトリを渡し、実ログを読む場合も検証用キャッシュを本番と分離する。
-- UI確認は `UsageBar.app/Contents/MacOS/UsageBar --preview`。再現用の描画は `--render <snapshot.json> <output.png>`、Claude側はさらに `--claude` を指定する。snapshotはcollectorの出力形式を使う。
+- UI確認は `TokenMeter.app/Contents/MacOS/TokenMeter --preview`。再現用の描画は `--render <snapshot.json> <output.png>`、Claude側はさらに `--claude` を指定する。snapshotはcollectorの出力形式を使う。
 - 画像描画の成功と、実際のクリック操作の確認は区別して報告する。個人のセッション名が映る検証画像を公開しない。
-- ビルドキャッシュは `USAGEBAR_BUILD_DIR` で変更できる。コンパイラのmodule cacheはパスを含むため、移動した古いキャッシュを再利用してエラーになる場合は新しいディレクトリを使う。
-- 常駐中のアプリを更新・移動するときはUsageBar自身だけを終了し、終了確認後に新しい場所から起動する。広範囲のプロセス終了を避ける。
+- ビルドキャッシュは `TOKENMETER_BUILD_DIR` で変更できる。コンパイラのmodule cacheはパスを含むため、移動した古いキャッシュを再利用してエラーになる場合は新しいディレクトリを使う。
+- 常駐中のアプリを更新・移動するときはTokenMeter自身だけを終了し、終了確認後に新しい場所から起動する。広範囲のプロセス終了を避ける。
 
 ## Git管理・別Macへの移行
 
 - ソース、ロゴ、単価、テスト、`build.sh`、README、このファイルを再現可能な形で管理する。GitHubを利用する場合はユーザーのバックアップ意図に沿って非公開を基本とし、今回の作業依頼から無関係な公開・pushを推測しない。
-- `.gitignore` を整備するときは `UsageBar.app/`、ビルドキャッシュ、`work/`、`__pycache__/`、`.DS_Store`、実データ入りsnapshot・プレビュー・実行時設定を除外する。ロゴ等の必要なPNGまで一括除外しない。
+- `.gitignore` を整備するときは `TokenMeter.app/`、ビルドキャッシュ、`work/`、`__pycache__/`、`.DS_Store`、実データ入りsnapshot・プレビュー・実行時設定を除外する。ロゴ等の必要なPNGまで一括除外しない。
 - 認証情報、`.codex`／`.claude` の個人ログ、Application Supportの実データをリポジトリに含めない。実行ファイルやZIPの配布はソース管理と分ける。
 - ユーザー名やこのMac固有のプロジェクト絶対パスをソースに埋め込まず、リソースはBundle、設定先はユーザーホームから解決する。
 - 別Macでの復元手順は、開発ツールとCodex CLIの準備、ソース取得、ビルド、各サービスのログイン、Claude連携設定。ローカル履歴は別のバックアップで引き継ぐ。完成済みアプリを配布する場合、配布先に開発ツールは不要。

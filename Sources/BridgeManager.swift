@@ -32,7 +32,7 @@ final class BridgeManager: @unchecked Sendable {
         self.claudeDirectory = claudeDirectory ?? URL(fileURLWithPath: environment["CLAUDE_CONFIG_DIR"] ??
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path)
         self.helperSource = helperSource ?? Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Helpers/UsageBarClaudeBridge")
+            .appendingPathComponent("Contents/Helpers/TokenMeterClaudeBridge")
     }
 
     func setup(remove: Bool = false) throws -> String {
@@ -47,7 +47,7 @@ final class BridgeManager: @unchecked Sendable {
         var config = readObject(stateDirectory.appendingPathComponent("bridge-config.json")) ?? [:]
         let current = settings["statusLine"] as? [String: Any] ?? [:]
         let currentCommand = current["command"] as? String ?? ""
-        let ours = isUsageBarCommand(currentCommand)
+        let ours = isTokenMeterCommand(currentCommand)
 
         if remove {
             if ours {
@@ -67,8 +67,8 @@ final class BridgeManager: @unchecked Sendable {
             let backup = stateDirectory.appendingPathComponent("statusline-backup-\(DispatchTime.now().uptimeNanoseconds).json")
             try atomicWrite(config, to: backup)
         }
-        let installedHelper = stateDirectory.appendingPathComponent("UsageBarClaudeBridge")
-        let temporaryHelper = stateDirectory.appendingPathComponent("UsageBarClaudeBridge.\(getpid()).tmp")
+        let installedHelper = stateDirectory.appendingPathComponent("TokenMeterClaudeBridge")
+        let temporaryHelper = stateDirectory.appendingPathComponent("TokenMeterClaudeBridge.\(getpid()).tmp")
         if fileManager.fileExists(atPath: temporaryHelper.path) { try fileManager.removeItem(at: temporaryHelper) }
         try fileManager.copyItem(at: helperSource, to: temporaryHelper)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: temporaryHelper.path)
@@ -97,13 +97,14 @@ final class BridgeManager: @unchecked Sendable {
         guard let settings = readObject(settingsURL),
               let statusLine = settings["statusLine"] as? [String: Any],
               let command = statusLine["command"] as? String,
-              isUsageBarCommand(command) else { return }
+              isTokenMeterCommand(command) else { return }
         _ = try? setup()
     }
 
-    private func isUsageBarCommand(_ command: String) -> Bool {
-        command.contains("UsageBar") &&
-            (command.contains("claude_bridge.py") || command.contains("UsageBarClaudeBridge"))
+    private func isTokenMeterCommand(_ command: String) -> Bool {
+        // Recognize installed helpers from both names without replacing the saved original command.
+        command.contains("TokenMeterClaudeBridge") || command.contains("UsageBarClaudeBridge") ||
+            (command.contains("UsageBar") && command.contains("claude_bridge.py"))
     }
 
     private func shellQuote(_ value: String) -> String {

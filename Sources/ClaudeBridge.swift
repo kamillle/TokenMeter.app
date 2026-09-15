@@ -14,7 +14,7 @@ struct ClaudeBridgeMain {
 
     private static var stateDirectory: URL {
         let environment = ProcessInfo.processInfo.environment
-        if let configured = environment["USAGEBAR_STATE_DIR"] { return URL(fileURLWithPath: configured) }
+        if let configured = environment["TOKENMETER_STATE_DIR"] ?? environment["USAGEBAR_STATE_DIR"] { return URL(fileURLWithPath: configured) }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/UsageBar")
     }
@@ -31,7 +31,7 @@ struct ClaudeBridgeMain {
         guard let config = readObject(stateDirectory.appendingPathComponent("bridge-config.json")),
               let original = config["original"] as? [String: Any],
               let command = original["command"] as? String,
-              !command.contains("claude_bridge.py"), !command.contains("UsageBarClaudeBridge") else { return nil }
+              !command.contains("claude_bridge.py"), !command.contains("TokenMeterClaudeBridge"), !command.contains("UsageBarClaudeBridge") else { return nil }
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

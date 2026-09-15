@@ -1,4 +1,5 @@
 # Generated application and release archives
+/TokenMeter.app/
 /UsageBar.app/
 /*.zip
 /*.dmg

@@ -661,7 +661,7 @@ final class UsageCollector: @unchecked Sendable {
     private func codexRPC() throws -> (rateLimits: [String: Any], accountID: String?) {
         let environment = ProcessInfo.processInfo.environment
         var candidates: [String] = []
-        if let configured = environment["USAGEBAR_CODEX"] { candidates.append(configured) }
+        if let configured = environment["TOKENMETER_CODEX"] { candidates.append(configured) }
         let searchPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" +
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin").path
         for directory in (environment["PATH"] ?? searchPath).split(separator: ":") {
@@ -704,7 +704,7 @@ final class UsageCollector: @unchecked Sendable {
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             }
         }
-        try send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "usagebar", "version": "1.0.0"], "capabilities": [:]]])
+        try send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "tokenmeter", "version": "1.0.0"], "capabilities": [:]]])
         _ = try receiver.wait(for: 1, timeout: 12)
         try send(["method": "initialized"])
         try send(["id": 2, "method": "account/read", "params": ["refreshToken": false]])
