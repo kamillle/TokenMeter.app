@@ -18,7 +18,7 @@ func dateText(_ time: Double) -> String {
 func providerColor(_ provider: String) -> Color {
     provider == "codex" ? Color(red: 0.12, green: 0.57, blue: 0.49) : Color(red: 0.76, green: 0.42, blue: 0.29)
 }
-let sessionMetricWidth: CGFloat = 84
+let sessionMetricWidth: CGFloat = 82
 
 // User-selected PNGs are bundled locally; AppKit adapts the black mark to the menu-bar appearance.
 func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
@@ -182,6 +182,7 @@ func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
 
 struct Panel: View {
     @ObservedObject var store: Store
+    @State private var showingQuotaInfo = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -254,76 +255,129 @@ struct Panel: View {
             HStack(spacing: 8) {
                 providerButton("codex", "Codex")
                 providerButton("claude", "Claude")
-            }.padding(.horizontal, 22).padding(.bottom, 8)
-            quotaCard.padding(.horizontal, 22)
-            if !store.failure.isEmpty { Text(store.failure).font(.caption).foregroundStyle(.orange).padding(.horizontal, 22).padding(.top, 8) }
-            if !store.notice.isEmpty {
-                HStack { Text(store.notice).font(.caption); Spacer(); Button { store.notice = "" } label: { Image(systemName:"xmark") }.buttonStyle(.plain) }.padding(10).background(.quaternary).padding(.horizontal,22).padding(.top,8)
-            }
-            HStack {
-                Text("セッション").font(.system(size: 14, weight: .semibold))
-                Text("\(store.sessions.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
-                    TextField("セッション・モデル・プロジェクトを検索", text: $store.filter)
-                        .textFieldStyle(.plain).font(.system(size: 11))
-                    if !store.filter.isEmpty {
-                        Button { store.filter = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain)
-                    }
-                }.padding(7).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
-                Picker("更新日", selection: $store.days) {
-                    Text("今日更新").tag(1); Text("7日以内").tag(7); Text("30日以内").tag(30)
-                }.labelsHidden().frame(width: 95).controlSize(.small)
-            }.padding(.horizontal,22).padding(.top,12).padding(.bottom,8)
-            HStack(spacing: 0) {
-                Text("各セッションの累計").frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 0) {
-                    Button { store.sessionSort = nil } label: {
-                        HStack(spacing: 2) {
-                            Image(systemName: "xmark.circle")
-                            Text("クリア")
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(providerColor(store.selected))
-                    .fixedSize()
-                    .opacity(store.sessionSort == nil ? 0 : 1)
-                    .allowsHitTesting(store.sessionSort != nil)
-                    .accessibilityHidden(store.sessionSort == nil)
-                    .help("並び替えを解除して更新日時順に戻す")
-                    .accessibilityLabel("並び替えをクリア")
-                    Spacer(minLength: 0).frame(width: 10)
-                    sortButton("INPUT", key: .input, width: 42)
-                }
-                .frame(width: sessionMetricWidth, alignment: .trailing)
-                sortButton("OUTPUT", key: .output, width: sessionMetricWidth)
-                sortButton("参考 USD", key: .cost, width: sessionMetricWidth)
-            }.font(.system(size:9,weight:.semibold)).foregroundStyle(.secondary).frame(height:12).padding(.horizontal,26).padding(.bottom,5)
+            }.padding(.horizontal, 22).padding(.bottom, 12)
+
+            // Keep unusually long errors or extra quota windows from displacing the session list.
             ScrollView {
-                LazyVStack(spacing: 4) {
+                quotaCard
+                if !store.failure.isEmpty {
+                    Label(store.failure, systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 11)).foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+                }
+                if !store.notice.isEmpty {
+                    HStack(alignment: .top) {
+                        Text(store.notice).font(.system(size: 11))
+                        Spacer()
+                        Button { store.notice = "" } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.plain).accessibilityLabel("お知らせを閉じる")
+                    }.padding(10).background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .frame(maxHeight: 218)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 22)
+
+            sessionToolbar
+            sessionColumns
+            ScrollView {
+                LazyVStack(spacing: 0) {
                     if store.sessions.isEmpty {
-                        VStack(spacing:10) {
-                            Image(systemName:"tray").font(.system(size:28)).foregroundStyle(.tertiary)
-                            Text(store.loading ? "セッションを集計しています…" : "該当するセッションがありません").font(.system(size:12)).foregroundStyle(.secondary)
-                            if store.loading { Text("初回は過去のログを読み込みます").font(.caption).foregroundStyle(.tertiary) }
-                        }.frame(maxWidth:.infinity).padding(.vertical,44)
+                        VStack(spacing: 10) {
+                            Image(systemName: store.filter.isEmpty ? "tray" : "magnifyingglass")
+                                .font(.system(size: 26)).foregroundStyle(.secondary)
+                            Text(store.loading ? "セッションを集計しています…" : "該当するセッションがありません")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                            if store.loading {
+                                Text("初回は過去のログを読み込みます").font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                        }.frame(maxWidth: .infinity).padding(.vertical, 34)
                     }
                     ForEach(store.sessions) { session in SessionRow(session: session) }
-                }.padding(.horizontal,16).padding(.bottom,8)
-            }.frame(minHeight:0,maxHeight:.infinity)
-            Divider()
-            VStack(alignment:.leading,spacing:4) {
-                HStack {
-                    Text("表示中の累計").foregroundStyle(.secondary)
-                    Spacer()
-                    Text("IN " + compact(store.sessions.reduce(0) { $0 + $1.input }))
-                    Text("OUT " + compact(store.sessions.reduce(0) { $0 + $1.output })).padding(.leading,8)
-                    Text(money(store.sessions.reduce(0) { $0 + $1.knownCost }) + (store.sessions.contains { $0.cost == nil } ? " + 未算定" : "")).fontWeight(.semibold).padding(.leading,8)
-                }.font(.system(size:11,design:.monospaced))
-                Text("API標準・短コンテキストの参考額です。サブスクの追加請求額ではありません。入力はキャッシュを含み、料金には割引を反映。Fast・長文・ツール料金は対象外。").font(.system(size:10)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-                if let errors = store.snapshot?.errors, !errors.isEmpty { Text(errors.joined(separator:" / ")).font(.caption2).foregroundStyle(.orange) }
-            }.padding(.horizontal,22).padding(.vertical,10)
+                }.padding(.horizontal, 22).padding(.bottom, 8)
+            }.frame(minHeight: 80, maxHeight: .infinity)
+            sessionSummary
         }
+    }
+
+    private var sessionToolbar: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 7) {
+                Text("セッション").font(.system(size: 15, weight: .semibold))
+                Text("\(store.sessions.count)")
+                    .font(.system(size: 11, weight: .medium)).monospacedDigit()
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.07), in: Capsule())
+                Spacer()
+                Text("最終更新日").font(.system(size: 11)).foregroundStyle(.secondary)
+                Picker("最終更新日", selection: $store.days) {
+                    Text("今日更新").tag(1); Text("7日以内").tag(7); Text("30日以内").tag(30)
+                }.labelsHidden().frame(width: 100).controlSize(.small)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("セッション・モデル・プロジェクトを検索", text: $store.filter)
+                    .textFieldStyle(.plain).font(.system(size: 12))
+                if !store.filter.isEmpty {
+                    Button { store.filter = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.plain).accessibilityLabel("検索をクリア")
+                }
+            }
+            .padding(.horizontal, 10).frame(height: 32)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
+        }.padding(.horizontal, 22).padding(.top, 16).padding(.bottom, 10)
+    }
+
+    private var sessionColumns: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text("各セッションの累計")
+                if store.sessionSort != nil {
+                    Button { store.sessionSort = nil } label: { Image(systemName: "arrow.uturn.backward") }
+                        .buttonStyle(.plain).foregroundStyle(providerColor(store.selected))
+                        .help("並び替えをクリアして更新日時順に戻す")
+                        .accessibilityLabel("並び替えをクリア")
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            sortButton("入力", key: .input, width: sessionMetricWidth)
+            sortButton("出力", key: .output, width: sessionMetricWidth)
+            sortButton("参考 USD", key: .cost, width: sessionMetricWidth)
+        }
+        .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+        .padding(.horizontal, 12).frame(height: 28)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 22)
+    }
+
+    private var sessionSummary: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("表示中の累計").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    Text("\(store.sessions.count) セッション").font(.system(size: 12, weight: .medium))
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                summaryMetric("入力", compact(store.sessions.reduce(0) { $0 + $1.input }))
+                summaryMetric("出力", compact(store.sessions.reduce(0) { $0 + $1.output }))
+                summaryMetric("参考 USD", money(store.sessions.reduce(0) { $0 + $1.knownCost }) + (store.sessions.contains { $0.cost == nil } ? " + 未算定" : ""))
+            }
+            Text("API標準・短コンテキストの概算。サブスクの追加請求ではありません。入力はキャッシュ込み。Fast／Priority・長文割増・地域・ツール料金等は対象外。")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let errors = store.snapshot?.errors, !errors.isEmpty {
+                Text(errors.joined(separator: " / ")).font(.system(size: 11)).foregroundStyle(.orange).lineLimit(2)
+                    .help(errors.joined(separator: "\n"))
+            }
+        }
+        .padding(.horizontal, 22).padding(.vertical, 12)
+        .background(Color.primary.opacity(0.035))
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private func summaryMetric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 14, weight: .semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+        }.frame(width: title == "参考 USD" ? 158 : sessionMetricWidth, alignment: .trailing).padding(.leading, 12)
     }
     func pageButton(_ id: String, _ title: String, icon: String) -> some View {
         let active = store.page == id
@@ -367,69 +421,131 @@ struct Panel: View {
         .accessibilityValue(active ? (ascending ? "昇順" : "降順") : "未選択")
     }
     func providerButton(_ id: String, _ title: String) -> some View {
-        Button { store.selected = id; store.filter = "" } label: {
-            HStack {
-                Image(nsImage:brandImage(id)).renderingMode(id == "codex" ? .template : .original).resizable().frame(width:18,height:18).foregroundStyle(Color.primary)
-                Text(title).font(.system(size:13,weight:.semibold))
+        let active = store.selected == id
+        let q = store.quota(id)
+        return Button { store.selected = id; store.filter = "" } label: {
+            HStack(spacing: 9) {
+                Image(nsImage: brandImage(id)).renderingMode(id == "codex" ? .template : .original)
+                    .resizable().frame(width: 20, height: 20).foregroundStyle(Color.primary)
+                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.primary)
                 Spacer()
-                if let limit = store.quota(id).limiting { Text(String(format:"%.0f%%",limit.remaining)).font(.system(size:13,weight:.semibold,design:.rounded)).monospacedDigit() }
-                else { Text("—").foregroundStyle(.secondary) }
-            }.padding(.horizontal,14).padding(.vertical,8)
-            .foregroundStyle(store.selected == id ? providerColor(id) : Color.secondary)
-            .background(store.selected == id ? providerColor(id).opacity(0.10) : Color.primary.opacity(0.03),in:RoundedRectangle(cornerRadius:10))
-            .overlay(RoundedRectangle(cornerRadius:10).strokeBorder(store.selected == id ? providerColor(id).opacity(0.30) : .clear,lineWidth:1))
-        }.buttonStyle(.plain)
+                if let limit = q.limiting {
+                    Text(String(format: "残り %.0f%%", limit.remaining) + (q.stale ? " ·" : ""))
+                        .font(.system(size: 12, weight: .medium)).monospacedDigit()
+                } else {
+                    Text("未取得").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                if active { Image(systemName: "checkmark.circle.fill").font(.system(size: 13)) }
+            }
+            .padding(.horizontal, 12).frame(height: 42)
+            .foregroundStyle(active ? providerColor(id) : Color.secondary)
+            .background(active ? providerColor(id).opacity(0.10) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(active ? providerColor(id).opacity(0.55) : Color.primary.opacity(0.12)))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(.plain).accessibilityAddTraits(active ? .isSelected : [])
     }
+
     var quotaCard: some View {
         let q = store.quota(store.selected)
-        return VStack(alignment:.leading,spacing:6) {
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("残り利用枠").font(.system(size: 13, weight: .semibold))
+                Button { showingQuotaInfo.toggle() } label: {
+                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                }.buttonStyle(.plain).accessibilityLabel("利用枠の取得情報")
+                    .popover(isPresented: $showingQuotaInfo) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("利用枠の取得情報").font(.system(size: 13, weight: .semibold))
+                            Text(q.detail)
+                            Text("取得元: " + q.source)
+                            Text("最終取得: " + dateText(q.observed))
+                        }.font(.system(size: 12)).padding(16).frame(width: 320, alignment: .leading)
+                    }
+                Spacer()
+                Label(q.stale && q.observed > 0 ? "古い取得値 · " + dateText(q.observed) : q.source,
+                      systemImage: q.stale && q.observed > 0 ? "clock.badge.exclamationmark" : "clock")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             if store.selected == "codex" {
                 HStack(spacing: 6) {
-                    Text("アカウントID").font(.system(size:10)).foregroundStyle(.secondary)
-                    Text(q.accountID ?? "未取得").font(.system(size:11,weight:.medium,design:.monospaced)).lineLimit(1).textSelection(.enabled)
-                }
-            }
-            HStack {
-                Text("残り利用枠").font(.system(size:12,weight:.semibold))
-                Spacer()
-                Text(q.stale && q.observed > 0 ? "最終取得値 · " + dateText(q.observed) : q.source).font(.system(size:10)).foregroundStyle(.secondary)
+                    Text("アカウントID").foregroundStyle(.secondary)
+                    Text(q.accountID ?? "未取得").lineLimit(1).textSelection(.enabled)
+                        .help(q.accountID ?? "未取得")
+                }.font(.system(size: 11))
             }
             if q.windows.isEmpty {
-                Text(store.loading && store.snapshot == nil ? "読み込み中…" : "利用枠は未取得").font(.system(size:23,weight:.semibold,design:.rounded)).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(store.loading && store.snapshot == nil ? "読み込み中…" : "利用枠は未取得")
+                        .font(.system(size: 22, weight: .semibold))
+                    if !q.detail.isEmpty { Text(q.detail).font(.system(size: 11)).foregroundStyle(.secondary) }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
             } else {
-                ForEach(q.windows.filter { $0.bucket == "codex" || $0.bucket == "claude" }) { window in
-                    VStack(spacing:5) {
-                        HStack(alignment:.firstTextBaseline) {
-                            Text(window.label).font(.system(size:11)).foregroundStyle(.secondary)
-                            Text(window.expired ? "更新待ち" : String(format:"%.0f%%",window.remaining)).font(.system(size:20,weight:.semibold,design:.rounded)).foregroundStyle(window.expired ? Color.secondary : providerColor(store.selected)).monospacedDigit()
-                            Spacer()
-                            Text(window.resetsAt > 0 ? "リセット " + dateText(window.resetsAt) : "リセット時刻未取得").font(.system(size:10)).foregroundStyle(.secondary)
-                        }
-                        GeometryReader { proxy in
-                            ZStack(alignment:.leading) {
-                                Capsule().fill(Color.primary.opacity(0.06))
-                                Capsule().fill(window.expired ? Color.secondary : (window.remaining < 15 ? .orange : providerColor(store.selected))).frame(width:proxy.size.width * (window.expired ? 0 : window.remaining / 100))
-                            }
-                        }.frame(height:5)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    ForEach(q.windows.filter { $0.bucket == "codex" || $0.bucket == "claude" }) { window in
+                        QuotaWindowCard(window: window, provider: store.selected)
                     }
                 }
             }
             if q.windows.contains(where: { $0.bucket != "codex" && $0.bucket != "claude" }) {
                 DisclosureGroup("ほかのモデル別利用枠") {
                     ForEach(q.windows.filter { $0.bucket != "codex" && $0.bucket != "claude" }) { w in
-                        HStack { Text(w.label); Spacer(); Text(w.expired ? "更新待ち" : String(format: "残り %.0f%%", w.remaining)) }.font(.system(size:10)).padding(.top,3)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack { Text(w.label); Spacer(); Text(w.expired ? "更新待ち" : String(format: "残り %.0f%%", w.remaining)) }
+                            Text(w.resetsAt > 0 ? "リセット " + dateText(w.resetsAt) : "リセット時刻未取得")
+                                .foregroundStyle(.secondary)
+                        }.padding(.vertical, 5)
                     }
-                }.font(.system(size:10)).foregroundStyle(.secondary)
+                }.font(.system(size: 11))
             }
-            Text(q.detail).font(.system(size:10)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-            if !q.error.isEmpty { Text(q.error + " · ログの最終取得値で補完").font(.system(size:10)).foregroundStyle(.orange) }
+            if !q.error.isEmpty {
+                Label(q.error + " · ログの最終取得値で補完", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11)).foregroundStyle(.orange)
+            }
             if store.selected == "claude" && q.windows.isEmpty {
                 HStack {
                     if q.bridgeInstalled != true { Button("Claude連携を有効にする") { store.bridge() }.controlSize(.small) }
-                    Button("Claudeの利用状況を開く") { NSWorkspace.shared.open(URL(string:"https://claude.ai/settings/usage")!) }.controlSize(.small)
+                    Button("Claudeの利用状況を開く") { NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!) }.controlSize(.small)
                 }
             }
-        }.padding(12).background(Color.primary.opacity(0.028),in:RoundedRectangle(cornerRadius:12))
+        }
+    }
+}
+
+struct QuotaWindowCard: View {
+    let window: LimitWindow
+    let provider: String
+    private var tint: Color {
+        window.expired ? .secondary : (window.remaining < 15 ? .orange : providerColor(provider))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(window.label).font(.system(size: 12, weight: .medium))
+                    if !window.expired && window.remaining < 15 {
+                        Text("残りわずか").font(.system(size: 10, weight: .medium)).foregroundStyle(tint)
+                    }
+                }
+                Spacer()
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(window.expired ? "更新待ち" : String(format: "%.0f", window.remaining))
+                    .font(.system(size: window.expired ? 23 : 32, weight: .semibold, design: .rounded)).monospacedDigit()
+                if !window.expired { Text("%").font(.system(size: 17, weight: .medium)) }
+                }.foregroundStyle(tint)
+            }.frame(height: 40)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.09))
+                    Capsule().fill(tint).frame(width: proxy.size.width * (window.expired ? 0 : min(100, max(0, window.remaining)) / 100))
+                }
+            }.frame(height: 6).accessibilityHidden(true)
+            Text(window.resetsAt > 0 ? "リセット " + dateText(window.resetsAt) : "リセット時刻未取得")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(tint.opacity(0.20)))
     }
 }
 
@@ -594,25 +710,26 @@ struct ProviderStatusCard: View {
 struct SessionRow: View {
     let session: Session
     @State private var expanded = false
+    @State private var hovered = false
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
             Button { withAnimation(.easeInOut(duration:0.15)) { expanded.toggle() } } label: {
                 HStack(spacing:0) {
-                    VStack(alignment:.leading,spacing:4) {
-                        HStack(spacing:4) {
-                            Image(systemName:expanded ? "chevron.down" : "chevron.right").font(.system(size:8,weight:.bold)).foregroundStyle(.tertiary)
-                            Text(session.title).lineLimit(1).font(.system(size:12,weight:.medium))
+                    VStack(alignment:.leading,spacing:5) {
+                        HStack(spacing:5) {
+                            Image(systemName:expanded ? "chevron.down" : "chevron.right").font(.system(size:9,weight:.semibold)).foregroundStyle(.secondary)
+                            Text(session.title).lineLimit(1).help(session.title).font(.system(size:13,weight:.medium))
                         }
-                        Text(dateText(session.updated) + " · " + session.models.map(\.model).joined(separator:", ")).font(.system(size:9)).foregroundStyle(.secondary).lineLimit(1)
+                        Text(dateText(session.updated) + " · " + session.models.map(\.model).joined(separator:", ")).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(1)
                     }.frame(maxWidth:.infinity,alignment:.leading)
                     Text(compact(session.input)).frame(width:sessionMetricWidth,alignment:.trailing)
                     Text(compact(session.output)).frame(width:sessionMetricWidth,alignment:.trailing)
                     Text(money(session.cost)).foregroundStyle(session.cost == nil ? Color.secondary : providerColor(session.provider)).frame(width:sessionMetricWidth,alignment:.trailing)
-                }.font(.system(size:11,design:.monospaced)).contentShape(Rectangle()).padding(10)
-            }.buttonStyle(.plain)
+                }.font(.system(size:12)).monospacedDigit().contentShape(Rectangle()).padding(.horizontal,12).padding(.vertical,12)
+            }.buttonStyle(.plain).accessibilityLabel(session.title + "、詳細を" + (expanded ? "閉じる" : "開く"))
             if expanded {
                 VStack(alignment:.leading,spacing:8) {
-                    Text(session.cwd.replacingOccurrences(of:FileManager.default.homeDirectoryForCurrentUser.path,with:"~")).font(.system(size:10)).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(session.cwd.replacingOccurrences(of:FileManager.default.homeDirectoryForCurrentUser.path,with:"~")).font(.system(size:11)).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack {
                         detail("入力（キャッシュ込）", session.input)
                         detail("出力", session.output)
@@ -623,20 +740,23 @@ struct SessionRow: View {
                         HStack { Text(m.model); Spacer(); Text(money(m.cost)) }.font(.system(size:10,design:.monospaced))
                     }
                     if !session.unknownModels.isEmpty {
-                        Text("単価未設定: " + session.unknownModels.joined(separator:", ") + "。歯車メニューから単価を追加できます。").font(.system(size:10)).foregroundStyle(.orange)
+                        Text("単価未設定: " + session.unknownModels.joined(separator:", ") + "。歯車メニューから単価を追加できます。").font(.system(size:11)).foregroundStyle(.orange)
                     }
                     HStack {
-                        Text(String(session.id.prefix(18)) + "…").font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
+                        Text(String(session.id.prefix(18)) + "…").font(.system(size:9,design:.monospaced)).foregroundStyle(.secondary)
                         Spacer()
-                        Button("IDをコピー") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(session.id,forType:.string) }.buttonStyle(.plain).font(.system(size:10))
+                        Button("IDをコピー") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(session.id,forType:.string) }.buttonStyle(.plain).font(.system(size:11))
                     }
-                }.padding(.horizontal,12).padding(.bottom,12).textSelection(.enabled)
+                }.padding(12).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius:8)).padding(.horizontal,8).padding(.bottom,8).textSelection(.enabled)
             }
-        }.background(Color.primary.opacity(expanded ? 0.045 : 0.02),in:RoundedRectangle(cornerRadius:9))
+        }
+        .background(Color.primary.opacity(expanded ? 0.045 : (hovered ? 0.035 : 0)), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(alignment: .bottom) { Divider().padding(.horizontal, 12) }
+        .onHover { hovered = $0 }
     }
     func detail(_ title: String, _ value: Int64) -> some View {
         VStack(alignment:.leading,spacing:3) {
-            Text(title).font(.system(size:9)).foregroundStyle(.secondary)
+            Text(title).font(.system(size:11)).foregroundStyle(.secondary)
             Text(value.formatted()).font(.system(size:11,weight:.medium,design:.monospaced))
         }.frame(maxWidth:.infinity,alignment:.leading)
     }
@@ -660,6 +780,8 @@ struct SessionRow: View {
                 let view = NSHostingView(rootView: Panel(store: store))
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 680), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.contentView = view
+                if CommandLine.arguments.contains("--dark") { view.appearance = NSAppearance(named: .darkAqua) }
+                window.orderFront(nil)
                 view.frame = NSRect(x: 0, y: 0, width: 620, height: 680)
                 view.layoutSubtreeIfNeeded()
                 let renderDelay = CommandLine.arguments.contains("--status") ? 3.0 : 0.6
