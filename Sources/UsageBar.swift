@@ -321,16 +321,6 @@ struct Panel: View {
                     Text(money(store.sessions.reduce(0) { $0 + $1.knownCost }) + (store.sessions.contains { $0.cost == nil } ? " + 未算定" : "")).fontWeight(.semibold).padding(.leading,8)
                 }.font(.system(size:11,design:.monospaced))
                 Text("API標準・短コンテキストの参考額です。サブスクの追加請求額ではありません。入力はキャッシュを含み、料金には割引を反映。Fast・長文・ツール料金は対象外。").font(.system(size:10)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-                HStack {
-                    Text("このMacのログ · 直近30日更新分")
-                    Spacer()
-                    Text("更新 " + dateText(store.snapshot?.updated ?? 0))
-                }.font(.system(size:9)).foregroundStyle(.tertiary)
-                HStack {
-                    Text("参考単価: " + store.pricingStatus.message)
-                    Spacer()
-                    if store.pricingStatus.lastSuccess > 0 { Text("確認 " + dateText(store.pricingStatus.lastSuccess)) }
-                }.font(.system(size:9)).foregroundStyle(.tertiary)
                 if let errors = store.snapshot?.errors, !errors.isEmpty { Text(errors.joined(separator:" / ")).font(.caption2).foregroundStyle(.orange) }
             }.padding(.horizontal,22).padding(.vertical,10)
         }
