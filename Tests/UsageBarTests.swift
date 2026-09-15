@@ -282,10 +282,10 @@ struct UsageBarTests {
 
         let descending = nextSessionSort(current: nil, key: .input)
         let ascending = nextSessionSort(current: descending, key: .input)
-        let cleared = nextSessionSort(current: ascending, key: .input)
+        let descendingAgain = nextSessionSort(current: ascending, key: .input)
         try check(descending == SessionSort(key: .input, direction: .descending), "1回目のクリックで降順にならない")
         try check(ascending == SessionSort(key: .input, direction: .ascending), "2回目のクリックで昇順にならない")
-        try check(cleared == nil, "3回目のクリックで並び替えを解除しない")
+        try check(descendingAgain == SessionSort(key: .input, direction: .descending), "3回目のクリックで降順に戻らない")
     }
 
     static func openAIPricingMarkdown() throws {

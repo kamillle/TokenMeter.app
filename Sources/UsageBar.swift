@@ -261,7 +261,7 @@ struct Panel: View {
             }.frame(width: width, alignment: .trailing).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(title + (active ? (ascending ? "：昇順。クリックで並び替えを解除" : "：降順。クリックで昇順") : "で並び替え"))
+        .help(title + (active ? (ascending ? "：昇順。クリックで降順" : "：降順。クリックで昇順") : "で並び替え"))
         .accessibilityLabel(title + "で並び替え")
         .accessibilityValue(active ? (ascending ? "昇順" : "降順") : "未選択")
     }

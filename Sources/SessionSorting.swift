@@ -22,7 +22,7 @@ func nextSessionSort(current: SessionSort?, key: SessionSortKey) -> SessionSort?
     }
     return current?.direction == .descending
         ? SessionSort(key: key, direction: .ascending)
-        : nil
+        : SessionSort(key: key, direction: .descending)
 }
 
 func sortedSessions(_ sessions: [Session], by sort: SessionSort?) -> [Session] {
