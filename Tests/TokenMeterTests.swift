@@ -33,6 +33,7 @@ struct TokenMeterTests {
         try test("OpenAI公式MarkdownのStandard単価を読む", openAIPricingMarkdown)
         try test("Anthropic公式Markdownのキャッシュ単価を読む", anthropicPricingMarkdown)
         try test("自動単価よりユーザー単価を優先する", pricingPrecedence)
+        try test("新モデルを追加し欠落モデルの単価を保持する", pricingDiscovery)
         print("\(passed) tests passed")
     }
 
@@ -383,12 +384,14 @@ struct TokenMeterTests {
         | --- | --- | --- | --- | --- | --- | --- | --- | --- |
         | gpt-6-astra | $10.00 | $1.00 | $12.50 | $50.00 | $20.00 | $2.00 | $25.00 | $75.00 |
         ### Batch pricing data
+        | gpt-batch-only | $5.00 | $0.50 | $6.25 | $25.00 | $10.00 | $1.00 | $12.50 | $37.50 |
         | gpt-6-astra | $5.00 | $0.50 | $6.25 | $25.00 | $10.00 | $1.00 | $12.50 | $37.50 |
         ### Grouped Pricing Table data
         | Category | Model | Input | Cached input | Output |
         | Codex | gpt-5.3-codex | $1.75 | $0.175 | $14.00 |
         """
         let rates = OfficialPricingUpdater.parseOpenAI(markdown)
+        try check(rates["gpt-batch-only"] == nil, "Batch専用行を標準単価として追加した")
         try check(rates["gpt-6-astra"] == PriceRate(input: 10, cached: 1, write: 12.5, write1h: nil, output: 50), "Batch単価を選んだ")
         try check(rates["gpt-5.3-codex"] == PriceRate(input: 1.75, cached: 0.175, write: 1.75, write1h: nil, output: 14), "Codex単価を読めない")
     }
@@ -397,12 +400,34 @@ struct TokenMeterTests {
         let markdown = """
         | Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
         | --- | --- | --- | --- | --- | --- |
+        | Claude Fable 5.1 | $10 / MTok | $12.50 / MTok | $20 / MTok | $0.25 / MTok[^1] | $50 / MTok |
         | Claude Sonnet 5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.20 / MTok | $10 / MTok |
         | Claude Haiku 4.5 | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |
         """
         let rates = OfficialPricingUpdater.parseAnthropic(markdown)
+        let fable = PriceRate(input: 10, cached: 0.25, write: 12.5, write1h: 20, output: 50)
+        try check(rates["claude-fable-5-1"] == fable, "Fable 5.1のキャッシュ単価を読めない")
+        let bundled = try JSONDecoder().decode(PricingDocument.self, from: Data(contentsOf: URL(fileURLWithPath: "Sources/pricing.json")))
+        try check(bundled.models["claude-fable-5-1"] == fable, "Fable 5.1の同梱単価が不正")
         try check(rates["claude-sonnet-5"] == PriceRate(input: 2, cached: 0.2, write: 2.5, write1h: 4, output: 10), "Sonnet単価を読めない")
         try check(rates["claude-haiku-4-5"] == PriceRate(input: 1, cached: 0.1, write: 1.25, write1h: 2, output: 5), "小数バージョンIDを変換できない")
+    }
+
+    static func pricingDiscovery() throws {
+        let old = PriceRate(input: 5, cached: 0.5, write: 6.25, write1h: 10, output: 25)
+        let markdown = """
+        | Claude Fable 5.1 | $10 / MTok | $12.50 / MTok | $20 / MTok | $0.25 / MTok | $50 / MTok |
+        | Claude Opus 5 | $6 / MTok | $7.50 / MTok | $12 / MTok | $0.60 / MTok | $30 / MTok |
+        | Claude Missing 5 | $10 / MTok | - | - | $1 / MTok | $50 / MTok |
+        """
+        let current = ["claude-opus-5": old, "claude-legacy-1": old]
+        let parsed = OfficialPricingUpdater.parseAnthropic(markdown)
+        let next = OfficialPricingUpdater.mergePrices(current: current, parsed: parsed)
+        try check(next["claude-fable-5-1"]?.cached == 0.25, "新モデルが追加されない")
+        try check(next["claude-opus-5"]?.input == 6, "既存単価が更新されない")
+        try check(next["claude-legacy-1"] == old, "欠落モデルを削除した")
+        try check(next["claude-missing-5"] == nil, "不完全な単価を追加した")
+        try check(OfficialPricingUpdater.mergePrices(current: next, parsed: parsed) == next, "再確認で単価が変わった")
     }
 
     static func pricingPrecedence() throws {

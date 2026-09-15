@@ -90,15 +90,12 @@ final class OfficialPricingUpdater: @unchecked Sendable {
 
             let parsedOpenAI = Self.parseOpenAI(openAI)
             let parsedAnthropic = Self.parseAnthropic(anthropic)
-            var missing: [String] = []
-            var nextModels = current.models
-            var changed = 0
-            for (model, oldRate) in current.models.sorted(by: { $0.key < $1.key }) {
-                let parsed = model.hasPrefix("claude-") ? parsedAnthropic[model] : parsedOpenAI[model]
-                guard let newRate = parsed else { missing.append(model); continue }
-                if newRate != oldRate { nextModels[model] = newRate; changed += 1 }
+            guard !parsedOpenAI.isEmpty, !parsedAnthropic.isEmpty else {
+                throw PricingUpdateError.invalidResponse("モデル単価")
             }
-            if !missing.isEmpty { throw PricingUpdateError.missingModels(missing) }
+            let parsed = parsedOpenAI.merging(parsedAnthropic) { _, new in new }
+            let nextModels = Self.mergePrices(current: current.models, parsed: parsed)
+            let changed = nextModels.filter { current.models[$0.key] != $0.value }.count
 
             status.lastSuccess = timestamp
             let formatter = DateFormatter()
@@ -131,9 +128,18 @@ final class OfficialPricingUpdater: @unchecked Sendable {
         }
     }
 
+    // Missing or incomplete rows retain their previous prices; complete new rows are added.
+    static func mergePrices(current: [String: PriceRate], parsed: [String: PriceRate]) -> [String: PriceRate] {
+        current.merging(parsed) { _, new in new }
+    }
+
     static func parseOpenAI(_ markdown: String) -> [String: PriceRate] {
         var rates: [String: PriceRate] = [:]
-        for line in markdown.split(separator: "\n").map(String.init) where line.hasPrefix("|") {
+        var section = ""
+        for line in markdown.split(separator: "\n").map(String.init) {
+            if line.hasPrefix("#") { section = line.lowercased(); continue }
+            guard line.hasPrefix("|"),
+                  section.contains("standard pricing data") || section.contains("grouped pricing table data") else { continue }
             let cells = tableCells(line)
             if cells.count >= 9, cells[0].hasPrefix("gpt-") || cells[0].hasPrefix("o") {
                 guard rates[cells[0]] == nil,
