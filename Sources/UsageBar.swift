@@ -333,8 +333,9 @@ struct Panel: View {
     func pageButton(_ id: String, _ title: String, icon: String) -> some View {
         let active = store.page == id
         return Button {
+            let switched = store.page != id
             store.page = id
-            if id == "status", store.providerStatuses.isEmpty { store.refreshStatus() }
+            if id == "status", switched { store.refreshStatus() }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: icon)
@@ -348,6 +349,7 @@ struct Panel: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 7)
             .background(active ? Color(nsColor: .controlBackgroundColor) : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(active ? .isSelected : [])
@@ -472,7 +474,7 @@ struct StatusPanel: View {
                         .font(.system(size: 10)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
 
-                Text("各社の公開ステータスを5分ごとに確認します。表示は全ユーザー・全機能の個別状況を保証するものではありません。")
+                Text("Statusタブを開いたときと手動更新時に各社の公開ステータスを確認します。表示は全ユーザー・全機能の個別状況を保証するものではありません。")
                     .font(.system(size: 9)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 2)
             }
@@ -651,7 +653,6 @@ struct SessionRow: View {
     let popover = NSPopover()
     var timer: Timer?
     var pricingTimer: Timer?
-    var statusTimer: Timer?
     var previewWindow: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let pos = CommandLine.arguments.firstIndex(of: "--render"), CommandLine.arguments.count > pos + 2 {
@@ -694,16 +695,12 @@ struct SessionRow: View {
         statusItem = item
         store.onUpdate = { [weak self] in self?.updateStatus() }
         store.refresh()
-        store.refreshStatus()
         store.checkPrices()
         timer = Timer.scheduledTimer(withTimeInterval:30,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.store.refresh() }
         }
         pricingTimer = Timer.scheduledTimer(withTimeInterval:60 * 60,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.store.checkPrices() }
-        }
-        statusTimer = Timer.scheduledTimer(withTimeInterval:5 * 60,repeats:true) { [weak self] _ in
-            Task { @MainActor in self?.store.refreshStatus() }
         }
         if CommandLine.arguments.contains("--preview") {
             let window = NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:680),styleMask:[.titled,.closable],backing:.buffered,defer:false)
@@ -766,7 +763,6 @@ struct SessionRow: View {
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         pricingTimer?.invalidate()
-        statusTimer?.invalidate()
     }
 }
 
