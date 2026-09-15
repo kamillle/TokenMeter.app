@@ -304,7 +304,11 @@ struct TokenMeterTests {
             let original: [String: Any] = ["env": ["DUMMY": "retained"], "statusLine": ["type": "command", "command": "cat", "padding": 3], "hooks": ["a": []]]
             let settings = claude.appendingPathComponent("settings.json"); try json(original, to: settings)
             let manager = BridgeManager(stateDirectory: state, claudeDirectory: claude, helperSource: helper)
-            _ = try manager.setup(); _ = try manager.setup(); _ = try manager.setup(remove: true)
+            _ = try manager.setup(); _ = try manager.setup()
+            let installed = try readJSON(settings)["statusLine"] as? [String: Any] ?? [:]
+            try check((installed["refreshInterval"] as? Int) == 60, "Claude通知を60秒間隔に設定しない")
+            try check((installed["padding"] as? Int) == 3, "既存の表示設定を保持しない")
+            _ = try manager.setup(remove: true)
             let restored = try readJSON(settings)
             try check(NSDictionary(dictionary: restored).isEqual(to: original), "元のstatusLineまたは他設定を復元しない")
         }

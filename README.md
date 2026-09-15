@@ -122,11 +122,13 @@ TOKENMETER_INSTALL_DIR="$HOME/Applications" bash install.sh
 
 ### 更新タイミング
 
+Claude連携は公式の `statusLine.refreshInterval` を60秒に設定します。これは通知コマンドの定期実行であり、サーバーへの毎分の問い合わせを保証しません。Claude Codeが保持する値の遅れは残る場合があります。連携解除時は更新間隔を含む元のstatusLine設定を復元します。
+
 | データ | 更新タイミング |
 | --- | --- |
 | ローカルログ | 30秒ごと。初回以降は追記分を差分読み取り |
-| Codexの利用枠・アカウント情報 | 通常5分ごと、および更新ボタン操作時 |
-| Claudeの利用枠 | Claude CodeからのstatusLine通知時 |
+| Codexの利用枠・アカウント情報 | 通常1分ごと、および更新ボタン操作時 |
+| Claudeの利用枠 | 応答時および60秒ごとのstatusLine通知。TokenMeterは30秒ごとに読み込み |
 | 公式ステータス | 起動時、5分ごと、Status画面への切り替え時、更新ボタン操作時 |
 | 公式単価 | 起動中に通常1日1回確認。取得失敗時は再試行 |
 

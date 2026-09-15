@@ -79,6 +79,7 @@ final class BridgeManager: @unchecked Sendable {
         var statusLine = current
         statusLine["type"] = "command"
         statusLine["command"] = shellQuote(installedHelper.path)
+        statusLine["refreshInterval"] = 60
         settings["statusLine"] = statusLine
         config["installed"] = true
         try atomicWrite(config, to: stateDirectory.appendingPathComponent("bridge-config.json"))

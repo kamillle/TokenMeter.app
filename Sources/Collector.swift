@@ -543,7 +543,7 @@ final class UsageCollector: @unchecked Sendable {
         let path = stateDirectory.appendingPathComponent("codex-quota.json")
         var cache = readCodable(CodexQuotaCache.self, from: path) ?? CodexQuotaCache()
         let needsAccountIDBackfill = cache.raw != nil && cache.accountIDChecked != true
-        if live && (force || needsAccountIDBackfill || now - (cache.attempted ?? 0) >= 300) {
+        if live && (force || needsAccountIDBackfill || now - (cache.attempted ?? 0) >= 60) {
             do {
                 let result = try codexRPC()
                 cache = CodexQuotaCache(attempted: now, observed: now, raw: JSONValue(any: result.rateLimits),
