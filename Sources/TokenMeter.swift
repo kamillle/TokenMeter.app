@@ -20,6 +20,11 @@ func providerColor(_ provider: String) -> Color {
 }
 let sessionMetricWidth: CGFloat = 82
 
+enum PanelLayout {
+    static let width: CGFloat = 720
+    static let height: CGFloat = 780
+}
+
 // User-selected PNGs are bundled locally; AppKit adapts the black mark to the menu-bar appearance.
 func brandImage(_ provider: String, size: CGFloat = 18) -> NSImage {
     let name = provider == "codex" ? "chatgpt-logo" : "claude-logo"
@@ -206,7 +211,7 @@ struct Panel: View {
                 .clipped()
             }
         }
-        .frame(width: 620, height: 680, alignment: .topLeading)
+        .frame(width: PanelLayout.width, height: PanelLayout.height, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -858,11 +863,11 @@ struct SessionRow: View {
                 if CommandLine.arguments.contains("--claude") { store.selected = "claude" }
                 if CommandLine.arguments.contains("--status") { store.page = "status"; store.refreshStatus() }
                 let view = NSHostingView(rootView: Panel(store: store))
-                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 680), styleMask: [.borderless], backing: .buffered, defer: false)
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width, height: PanelLayout.height), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.contentView = view
                 if CommandLine.arguments.contains("--dark") { view.appearance = NSAppearance(named: .darkAqua) }
                 window.orderFront(nil)
-                view.frame = NSRect(x: 0, y: 0, width: 620, height: 680)
+                view.frame = NSRect(x: 0, y: 0, width: PanelLayout.width, height: PanelLayout.height)
                 view.layoutSubtreeIfNeeded()
                 let renderDelay = CommandLine.arguments.contains("--status") ? 3.0 : 0.6
                 DispatchQueue.main.asyncAfter(deadline: .now() + renderDelay) {
@@ -879,7 +884,7 @@ struct SessionRow: View {
         // Detect duplicate instances using the application bundle identity.
         if NSRunningApplication.runningApplications(withBundleIdentifier:"local.tokenmeter.TokenMeter").filter({ $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }).count > 0 { NSApp.terminate(nil); return }
         popover.behavior = .transient
-        popover.contentSize = NSSize(width:620,height:680)
+        popover.contentSize = NSSize(width: PanelLayout.width, height: PanelLayout.height)
         popover.contentViewController = NSHostingController(rootView:Panel(store:store))
         let item = NSStatusBar.system.statusItem(withLength:NSStatusItem.variableLength)
         if let button = item.button {
@@ -920,7 +925,7 @@ struct SessionRow: View {
             Task { @MainActor in self?.store.checkPrices() }
         }
         if CommandLine.arguments.contains("--preview") {
-            let window = NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:680),styleMask:[.titled,.closable],backing:.buffered,defer:false)
+            let window = NSWindow(contentRect:NSRect(x:0,y:0,width:PanelLayout.width,height:PanelLayout.height),styleMask:[.titled,.closable],backing:.buffered,defer:false)
             window.title = "TokenMeter"; window.contentView = NSHostingView(rootView:Panel(store:store)); window.center(); window.makeKeyAndOrderFront(nil)
             previewWindow = window; NSApp.activate(ignoringOtherApps:true)
         }
