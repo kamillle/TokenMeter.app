@@ -44,6 +44,20 @@ struct ModelUsage: Codable, Identifiable, Equatable {
     var id: String { model }
 }
 
+struct SessionMemberUsage: Codable, Identifiable, Equatable {
+    var id: String
+    var parentID: String?
+    var agentName: String?
+    var input: Int64
+    var output: Int64
+    var cached: Int64
+    var write: Int64
+    var cost: Double?
+    var knownCost: Double
+    var unknownModels: [String]
+    var models: [ModelUsage]
+}
+
 struct Session: Codable, Identifiable, Equatable {
     var id: String
     var provider: String
@@ -58,6 +72,9 @@ struct Session: Codable, Identifiable, Equatable {
     var knownCost: Double
     var unknownModels: [String]
     var models: [ModelUsage]
+    var parentID: String? = nil
+    var agentName: String? = nil
+    var members: [SessionMemberUsage] = []
 }
 
 struct Snapshot: Codable, Equatable {
@@ -184,10 +201,14 @@ struct FileState: Codable, Equatable {
     var forked: Bool?
     var internalSession: Bool?
     var foreignRecords: Bool?
+    var sessionMetaSeen: Bool?
+    var parentID: String?
+    var agentName: String?
 
     enum CodingKeys: String, CodingKey {
         case provider, id, title, cwd, model, updated, offset, inode, mtime, size
         case requests, legacy, previous, rate, malformed, forked, foreignRecords
+        case sessionMetaSeen, parentID, agentName
         case internalSession = "internal"
     }
 }
@@ -228,14 +249,58 @@ enum CollectorError: LocalizedError {
     }
 }
 
+// Only these small scheduling/result sections hold the lock. File I/O and JSON
+// parsing run outside it, with each worker owning its FileState and formatters.
+enum FileScanExecutor {
+    private final class Work<Output>: @unchecked Sendable {
+        let lock = NSLock()
+        var next = 0
+        var results: [Output?]
+
+        init(count: Int) { results = Array(repeating: nil, count: count) }
+
+        func take() -> Int? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard next < results.count else { return nil }
+            defer { next += 1 }
+            return next
+        }
+
+        func store(_ value: Output, at index: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            results[index] = value
+        }
+    }
+
+    static func map<Input, Output>(_ inputs: [Input], concurrency: Int,
+                                   transform: (Input) -> Output) -> [Output] {
+        let workers = min(max(1, concurrency), inputs.count)
+        guard workers > 1 else { return inputs.map(transform) }
+        let work = Work<Output>(count: inputs.count)
+        // Schedule a fixed number of workers, not one task per file. Pulling the
+        // next file dynamically keeps differently sized logs balanced.
+        DispatchQueue.concurrentPerform(iterations: workers) { _ in
+            while let index = work.take() {
+                let value = autoreleasepool { transform(inputs[index]) }
+                work.store(value, at: index)
+            }
+        }
+        // concurrentPerform joins every worker before results are read.
+        return work.results.map { $0! }
+    }
+}
+
 final class UsageCollector: @unchecked Sendable {
-    static let cacheVersion = 6
+    static let cacheVersion = 8
 
     let stateDirectory: URL
     let codexHome: URL
     let claudeHome: URL
     let claudeAccountFile: URL
     let pricingURL: URL
+    let scanConcurrency: Int
     private let fileManager = FileManager.default
 
     init(
@@ -243,10 +308,12 @@ final class UsageCollector: @unchecked Sendable {
             .appendingPathComponent("Library/Application Support/UsageBar"),
         codexHome: URL? = nil,
         claudeHome: URL? = nil,
-        pricingURL: URL? = nil
+        pricingURL: URL? = nil,
+        scanConcurrency: Int = min(4, ProcessInfo.processInfo.activeProcessorCount)
     ) {
         let environment = ProcessInfo.processInfo.environment
         self.stateDirectory = stateDirectory
+        self.scanConcurrency = max(1, min(4, scanConcurrency))
         self.codexHome = codexHome ?? URL(fileURLWithPath: environment["CODEX_HOME"] ??
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
         self.claudeHome = claudeHome ?? URL(fileURLWithPath: environment["CLAUDE_CONFIG_DIR"] ??
@@ -271,12 +338,15 @@ final class UsageCollector: @unchecked Sendable {
         try ensurePrivateDirectory(stateDirectory)
         let cacheURL = stateDirectory.appendingPathComponent("sessions-cache.json")
         let cache = readCodable(SessionCache.self, from: cacheURL)
-        // Version 5 is the final Python cache and has the same persisted fields.
-        // Reuse it once so migration does not reread multi-gigabyte log histories.
-        let previous = [5, Self.cacheVersion].contains(cache?.version ?? -1) ? cache?.files ?? [:] : [:]
+        // Versions 5 through 7 have compatible persisted counters. Reuse them so a
+        // migration does not reread multi-gigabyte histories; only states that
+        // match the old spawned-thread identity bug are rebuilt below.
+        let previousVersion = cache?.version ?? -1
+        let previous = [5, 6, 7, Self.cacheVersion].contains(previousVersion) ? cache?.files ?? [:] : [:]
         var files: [String: FileState] = [:]
         var errors = Set<String>()
         let cutoff = Date().timeIntervalSince1970 - 30 * 86_400
+        var jobs: [(path: URL, provider: String, previous: FileState?)] = []
 
         for (provider, roots) in [("codex", [codexHome.appendingPathComponent("sessions"), codexHome.appendingPathComponent("archived_sessions")]),
                                   ("claude", [claudeHome.appendingPathComponent("projects")])] {
@@ -286,16 +356,34 @@ final class UsageCollector: @unchecked Sendable {
                     do {
                         let values = try path.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
                         guard values.isRegularFile != false, (values.contentModificationDate?.timeIntervalSince1970 ?? 0) >= cutoff else { continue }
-                        var state = try scanFile(path, provider: provider, previous: previous[path.path])
-                        if provider == "claude" && path.pathComponents.contains("subagents") {
-                            state.id = path.deletingPathExtension().lastPathComponent
-                            if state.title.isEmpty { state.title = "Subagent · " + String(state.id.suffix(8)) }
-                        }
-                        files[path.path] = state
+                        let cached = previous[path.path]
+                        let lostSpawnIdentity = cached?.foreignRecords == true &&
+                            cached?.requests.isEmpty == true && cached?.legacy.isEmpty == false
+                        let missingSourceParent = cached?.agentName?.isEmpty == false && cached?.parentID == nil
+                        let mustRepairSpawnedThread = previousVersion < Self.cacheVersion && provider == "codex" &&
+                            (lostSpawnIdentity || missingSourceParent)
+                        jobs.append((path, provider, mustRepairSpawnedThread ? nil : cached))
                     } catch {
                         errors.insert(provider + ": 読み取れないログがあります")
                     }
                 }
+            }
+        }
+
+        let results = FileScanExecutor.map(jobs, concurrency: scanConcurrency) { job in
+            Result<FileState, Error> {
+                var state = try self.scanFile(job.path, provider: job.provider, previous: job.previous)
+                if job.provider == "claude" && job.path.pathComponents.contains("subagents") {
+                    state.id = job.path.deletingPathExtension().lastPathComponent
+                    if state.title.isEmpty { state.title = "Subagent · " + String(state.id.suffix(8)) }
+                }
+                return state
+            }
+        }
+        for (job, result) in zip(jobs, results) {
+            switch result {
+            case .success(let state): files[job.path.path] = state
+            case .failure: errors.insert(job.provider + ": 読み取れないログがあります")
             }
         }
 
@@ -326,11 +414,24 @@ final class UsageCollector: @unchecked Sendable {
         if state.provider == "codex" {
             switch kind {
             case "session_meta":
+                // A spawned thread begins with its own metadata, followed by a copy of
+                // the parent's history (including the parent's session_meta). Keep the
+                // first identity so the copied metadata cannot turn the child into the
+                // parent and cause all of the child's usage records to be rejected.
+                guard state.sessionMetaSeen != true else { break }
+                state.sessionMetaSeen = true
                 state.id = string(payload["id"]) ?? state.id
                 state.cwd = string(payload["cwd"]) ?? ""
-                state.forked = !(string(payload["forked_from_id"]) ?? "").isEmpty
                 let source = object(payload["source"])
                 let subagent = object(source?["subagent"])
+                let spawned = object(subagent?["thread_spawn"])
+                let forkedParentID = string(payload["forked_from_id"])
+                let sourceParentID = string(spawned?["parent_thread_id"])
+                state.parentID = [forkedParentID, sourceParentID]
+                    .compactMap { $0 }
+                    .first { !$0.isEmpty }
+                state.forked = state.parentID != nil
+                state.agentName = string(spawned?["agent_nickname"])
                 state.internalSession = string(subagent?["other"]) == "guardian"
             case "turn_context":
                 state.model = modelName(string(payload["model"]))
@@ -430,6 +531,8 @@ final class UsageCollector: @unchecked Sendable {
             var updated = 0.0
             var requests: [String: RequestRecord] = [:]
             var legacy: [String: TokenVector] = [:]
+            var parentID: String?
+            var agentName: String?
         }
         var groups: [String: Group] = [:]
         for state in states where state.internalSession != true {
@@ -437,6 +540,8 @@ final class UsageCollector: @unchecked Sendable {
             var group = groups[key] ?? Group(id: state.id, provider: state.provider)
             if !state.title.isEmpty { group.title = state.title }
             if !state.cwd.isEmpty { group.cwd = state.cwd }
+            if group.parentID == nil { group.parentID = state.parentID }
+            if group.agentName == nil { group.agentName = state.agentName }
             group.updated = max(group.updated, state.updated)
             for (requestID, record) in state.requests {
                 if let old = group.requests[requestID] {
@@ -478,13 +583,76 @@ final class UsageCollector: @unchecked Sendable {
             let fallbackTitle = URL(fileURLWithPath: group.cwd).lastPathComponent
             let title = titles[group.id].flatMap { $0.isEmpty ? nil : $0 } ??
                 (!group.title.isEmpty ? group.title : (!fallbackTitle.isEmpty ? fallbackTitle : "Session"))
+            let member = SessionMemberUsage(id: group.id, parentID: group.parentID, agentName: group.agentName,
+                                            input: total.input, output: total.output,
+                                            cached: total.cached, write: total.write,
+                                            cost: unknown.isEmpty ? estimated : nil, knownCost: estimated,
+                                            unknownModels: unknown, models: breakdown)
             rows.append(Session(id: group.id, provider: group.provider, title: title, cwd: group.cwd,
                                 updated: group.updated, input: total.input, output: total.output,
                                 cached: total.cached, write: total.write,
                                 cost: unknown.isEmpty ? estimated : nil, knownCost: estimated,
-                                unknownModels: unknown, models: breakdown))
+                                unknownModels: unknown, models: breakdown,
+                                parentID: group.parentID, agentName: group.agentName, members: [member]))
         }
-        return rows.sorted { $0.updated > $1.updated }
+        return groupedAgentSessions(rows).sorted { $0.updated > $1.updated }
+    }
+
+    private func groupedAgentSessions(_ rows: [Session]) -> [Session] {
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        var children: [String: [Session]] = [:]
+        var roots: [Session] = []
+        for row in rows {
+            if row.provider == "codex", let parentID = row.parentID,
+               byID[parentID]?.provider == "codex", parentID != row.id {
+                children[parentID, default: []].append(row)
+            } else {
+                roots.append(row)
+            }
+        }
+
+        func mergeModels(_ values: [ModelUsage]) -> [ModelUsage] {
+            var totals: [String: ModelUsage] = [:]
+            for value in values {
+                if var total = totals[value.model] {
+                    total.input += value.input
+                    total.output += value.output
+                    total.cached += value.cached
+                    total.write += value.write
+                    total.cost = (total.cost != nil && value.cost != nil) ? total.cost! + value.cost! : nil
+                    totals[value.model] = total
+                } else {
+                    totals[value.model] = value
+                }
+            }
+            return totals.values.sorted { $0.model < $1.model }
+        }
+
+        var visited = Set<String>()
+        func aggregate(_ row: Session) -> Session {
+            guard visited.insert(row.id).inserted else { return row }
+            let descendants = (children[row.id] ?? [])
+                .sorted { $0.updated < $1.updated }
+                .map(aggregate)
+            guard !descendants.isEmpty else { return row }
+            var result = row
+            result.updated = descendants.reduce(row.updated) { max($0, $1.updated) }
+            result.input += descendants.reduce(0) { $0 + $1.input }
+            result.output += descendants.reduce(0) { $0 + $1.output }
+            result.cached += descendants.reduce(0) { $0 + $1.cached }
+            result.write += descendants.reduce(0) { $0 + $1.write }
+            result.knownCost += descendants.reduce(0) { $0 + $1.knownCost }
+            result.unknownModels = Array(Set(row.unknownModels + descendants.flatMap(\.unknownModels))).sorted()
+            result.cost = result.unknownModels.isEmpty ? result.knownCost : nil
+            result.models = mergeModels(row.models + descendants.flatMap(\.models))
+            result.members = row.members + descendants.flatMap(\.members)
+            return result
+        }
+
+        var result = roots.map(aggregate)
+        // Keep malformed cycles visible instead of silently discarding their usage.
+        result += rows.filter { !visited.contains($0.id) }.map(aggregate)
+        return result
     }
 
     func normalizeWindow(_ window: [String: Any], label initialLabel: String, observed: Double, snake: Bool = false, now: Double = Date().timeIntervalSince1970) -> LimitWindow? {

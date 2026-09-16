@@ -748,6 +748,36 @@ struct SessionRow: View {
             if expanded {
                 VStack(alignment:.leading,spacing:8) {
                     Text(session.cwd.replacingOccurrences(of:FileManager.default.homeDirectoryForCurrentUser.path,with:"~")).font(.system(size:11)).foregroundStyle(.secondary).textSelection(.enabled)
+                    if session.members.count > 1 {
+                        VStack(spacing: 0) {
+                            HStack(spacing: 8) {
+                                Text("チャット内訳").frame(maxWidth: .infinity, alignment: .leading)
+                                Text("入力").frame(width: 70, alignment: .trailing)
+                                Text("出力").frame(width: 58, alignment: .trailing)
+                                Text("参考 USD").frame(width: 70, alignment: .trailing)
+                            }
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                            .padding(.bottom, 5)
+                            ForEach(Array(session.members.enumerated()), id: \.element.id) { offset, member in
+                                HStack(spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(memberTitle(member, offset: offset)).lineLimit(1)
+                                        Text(member.models.map(\.model).joined(separator: ", "))
+                                            .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                    Text(compact(member.input)).frame(width: 70, alignment: .trailing)
+                                    Text(compact(member.output)).frame(width: 58, alignment: .trailing)
+                                    Text(money(member.cost)).frame(width: 70, alignment: .trailing)
+                                        .foregroundStyle(member.cost == nil ? Color.secondary : providerColor(session.provider))
+                                }
+                                .font(.system(size: 10, design: .monospaced)).monospacedDigit()
+                                .padding(.vertical, 4)
+                                if offset < session.members.count - 1 { Divider() }
+                            }
+                        }
+                        .padding(8)
+                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+                    }
                     HStack {
                         detail("入力（キャッシュ込）", session.input)
                         detail("出力", session.output)
@@ -777,6 +807,12 @@ struct SessionRow: View {
             Text(title).font(.system(size:11)).foregroundStyle(.secondary)
             Text(value.formatted()).font(.system(size:11,weight:.medium,design:.monospaced))
         }.frame(maxWidth:.infinity,alignment:.leading)
+    }
+    func memberTitle(_ member: SessionMemberUsage, offset: Int) -> String {
+        if offset == 0 { return "メイン" }
+        let base = "エージェント \(offset)"
+        guard let name = member.agentName, !name.isEmpty else { return base }
+        return base + " · " + name
     }
 }
 

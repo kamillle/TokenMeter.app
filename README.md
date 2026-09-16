@@ -113,7 +113,7 @@ TOKENMETER_INSTALL_DIR="$HOME/Applications" bash install.sh
 
 | サービス | 既定の読み取り先 | 補足 |
 | --- | --- | --- |
-| Codexアプリ／CLI | `~/.codex/sessions`、`~/.codex/archived_sessions` | `CODEX_HOME` 指定時はその配下。Guardian内部レビューは除外 |
+| Codexアプリ／CLI | `~/.codex/sessions`、`~/.codex/archived_sessions` | `CODEX_HOME` 指定時はその配下。起動したエージェントは親チャットに合算し、展開時に個別表示。Guardian内部レビューは除外 |
 | Claude Code | `~/.claude/projects` | `CLAUDE_CONFIG_DIR` 指定時はその配下。サブエージェントは別行 |
 
 対象は**直近30日以内に更新されたローカルログ**です。「今日更新」「7日以内」「30日以内」はセッションの最終使用日時による絞り込みであり、表示値は各セッション全体の累計です。指定期間内だけの消費量ではありません。
@@ -126,7 +126,7 @@ Claude連携は公式の `statusLine.refreshInterval` を60秒に設定します
 
 | データ | 更新タイミング |
 | --- | --- |
-| ローカルログ | 30秒ごと。初回以降は追記分を差分読み取り |
+| ローカルログ | 30秒ごと。初回走査・差分読み取りはファイル単位で最大4並列。未変更ログはキャッシュを再利用 |
 | Codexの利用枠・アカウント情報 | 通常1分ごと、および更新ボタン操作時 |
 | Claudeの利用枠 | 応答時および60秒ごとのstatusLine通知。TokenMeterは30秒ごとに読み込み |
 | 公式ステータス | 起動時、5分ごと、Status画面への切り替え時、更新ボタン操作時 |
