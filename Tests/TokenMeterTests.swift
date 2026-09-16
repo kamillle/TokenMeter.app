@@ -16,10 +16,13 @@ struct TokenMeterTests {
         try test("旧形式からの移行分を保持する", migrationResidual)
         try test("親スレッドのレコードを除外する", foreignThread)
         try test("フォークの親履歴を課金しない", forkHistory)
+        try test("Codexエージェントを親チャットへ重複なく集計する", spawnedAgentGrouping)
         try test("モデル変更を別料金で集計する", modelSwitch)
         try test("Claudeストリーミングを重複除去する", claudeStreaming)
         try test("追記途中とファイル縮小を処理する", partialLineAndTruncation)
         try test("オフライン集計を差分更新する", offlineCollection)
+        try test("ファイル走査を上限内で並列実行する", boundedFileScanning)
+        try test("並列集計と直列集計のキャッシュ・差分結果が一致する", parallelCollection)
         try test("利用枠の0・欠落・期限切れを区別する", quotaEdgeCases)
         try test("複数の利用枠を保持する", multipleBuckets)
         try test("CodexアカウントIDを取得・保持する", codexAccountID)
@@ -125,6 +128,35 @@ struct TokenMeterTests {
         try check(c.summarize([s], prices: prices)[0].input == 100, "フォークの親履歴を集計した")
     }
 
+    static func spawnedAgentGrouping() throws {
+        let c = collector()
+        var parent = c.newState(for: URL(fileURLWithPath: "parent.jsonl"), provider: "codex")
+        c.consume(["type": "session_meta", "payload": ["id": "parent", "cwd": "/tmp/project"]], state: &parent)
+        c.consume(["type": "turn_context", "payload": ["model": "gpt-test"]], state: &parent)
+        c.consume(["type": "token_usage_record", "payload": ["thread_id": "parent", "response_id": "parent-own", "usage": usage(200)]], state: &parent)
+
+        var child = c.newState(for: URL(fileURLWithPath: "child.jsonl"), provider: "codex")
+        let source: [String: Any] = ["subagent": ["thread_spawn": [
+            "parent_thread_id": "parent", "depth": 1, "agent_nickname": "Astra Worker"
+        ]]]
+        c.consume(["type": "session_meta", "payload": [
+            "id": "child", "cwd": "/tmp/project", "source": source
+        ]], state: &child)
+        try check(child.parentID == "parent" && child.forked == true,
+                  "thread_spawnのparent_thread_idから親を復元しない")
+        // Codex copies the parent's metadata and usage into a spawned log.
+        c.consume(["type": "session_meta", "payload": ["id": "parent", "cwd": "/tmp/project"]], state: &child)
+        c.consume(["type": "token_usage_record", "payload": ["thread_id": "parent", "response_id": "inherited", "usage": usage(999)]], state: &child)
+        c.consume(["type": "turn_context", "payload": ["model": "gpt-test"]], state: &child)
+        c.consume(["type": "token_usage_record", "payload": ["thread_id": "child", "response_id": "child-own", "usage": usage(100)]], state: &child)
+
+        let rows = c.summarize([parent, child], prices: prices)
+        try check(rows.count == 1, "子エージェントが別のチャット行になった")
+        try check(rows[0].input == 300 && rows[0].members.count == 2, "親子の利用量を正しく合算しない")
+        try check(rows[0].members[1].input == 100, "複製された親履歴を子の利用量に含めた")
+        try check(rows[0].members[1].agentName == "Astra Worker", "エージェント名を保持しない")
+    }
+
     static func modelSwitch() throws {
         let c = collector(); var s = state(c)
         c.consume(event(usage(100)), state: &s); s.model = "unknown-new-model"; c.consume(event(usage(200, output: 20)), state: &s)
@@ -194,6 +226,85 @@ struct TokenMeterTests {
             try handle.close()
             snapshot = try c.collect(live: false)
             try check(snapshot.sessions.count == 1 && snapshot.sessions[0].input == 200, "差分更新が不正")
+        }
+    }
+
+    static func boundedFileScanning() throws {
+        let condition = NSCondition()
+        var active = 0, peak = 0, arrivals = 0
+        let values = FileScanExecutor.map(Array(0..<20), concurrency: 4) { index in
+            condition.lock()
+            active += 1; arrivals += 1; peak = max(peak, active)
+            condition.broadcast()
+            let deadline = Date().addingTimeInterval(3)
+            // The first four jobs must overlap; a serial executor times out and
+            // fails the peak assertion instead of deadlocking the test suite.
+            while arrivals < 4 {
+                if !condition.wait(until: deadline) { break }
+            }
+            active -= 1
+            condition.unlock()
+            return index * 2
+        }
+        try check(peak == 4, "4ワーカーが同時実行されない、または上限を超えた")
+        try check(values == (0..<20).map { $0 * 2 }, "結果が欠落・重複した、または順序が変わった")
+        let empty: [Int] = FileScanExecutor.map([], concurrency: 4) { $0 }
+        try check(empty.isEmpty, "空の入力を処理できない")
+    }
+
+    static func parallelCollection() throws {
+        struct Cache: Decodable { var files: [String: FileState] }
+        try temporary { root in
+            let codex = root.appendingPathComponent("codex")
+            let claude = root.appendingPathComponent("claude")
+            let serial = UsageCollector(stateDirectory: root.appendingPathComponent("serial"),
+                                        codexHome: codex, claudeHome: claude, scanConcurrency: 1)
+            let parallel = UsageCollector(stateDirectory: root.appendingPathComponent("parallel"),
+                                          codexHome: codex, claudeHome: claude, scanConcurrency: 4)
+            var paths: [URL] = []
+            for index in 0..<12 {
+                let path = root.appendingPathComponent(index < 8
+                    ? "codex/sessions/session-\(index).jsonl"
+                    : "claude/projects/project/subagents/agent-\(index).jsonl")
+                try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let record: [String: Any] = index < 8 ? event(usage(Int64(100 + index))) : [
+                    "type": "assistant", "sessionId": "shared-parent", "timestamp": 1000,
+                    "message": ["id": "r", "model": "claude-test", "usage": usage(50)]
+                ]
+                try (JSONSerialization.data(withJSONObject: record) + Data([0x0A])).write(to: path)
+                paths.append(path)
+            }
+            func compare() throws -> [String: FileState] {
+                let left = try serial.collect(live: false)
+                let right = try parallel.collect(live: false)
+                try check(left.errors == right.errors, "読み取りエラーが一致しない")
+                try check(left.sessions.count == right.sessions.count &&
+                          left.sessions.reduce(0) { $0 + $1.input } == right.sessions.reduce(0) { $0 + $1.input },
+                          "集計結果が一致しない")
+                func cache(_ collector: UsageCollector) throws -> [String: FileState] {
+                    try JSONDecoder().decode(Cache.self, from: Data(contentsOf:
+                        collector.stateDirectory.appendingPathComponent("sessions-cache.json"))).files
+                }
+                let a = try cache(serial), b = try cache(parallel)
+                try check(a == b, "ファイル単位の集計キャッシュが一致しない")
+                return Dictionary(uniqueKeysWithValues: b.map { (URL(fileURLWithPath: $0.key).lastPathComponent, $0.value) })
+            }
+            let initial = try compare()
+            try check(initial.count == 12, "走査したファイル数が不正: \(initial.count)")
+            try check(initial[paths[8].lastPathComponent]?.id == "agent-8", "Claudeサブエージェントを保持しない")
+            let unchanged = try compare()
+            try check(initial == unchanged, "未変更キャッシュが変化した")
+            let partial = try JSONSerialization.data(withJSONObject: event(usage(500)))
+            let handle = try FileHandle(forWritingTo: paths[0])
+            try handle.seekToEnd(); try handle.write(contentsOf: partial.prefix(30)); try handle.close()
+            let pending = try compare()
+            try check(pending[paths[0].lastPathComponent]?.offset == initial[paths[0].lastPathComponent]?.offset, "部分行を消費した")
+            let append = try FileHandle(forWritingTo: paths[0])
+            try append.seekToEnd(); try append.write(contentsOf: partial.dropFirst(30) + Data([0x0A])); try append.close()
+            try (JSONSerialization.data(withJSONObject: event(usage(2))) + Data([0x0A])).write(to: paths[1])
+            let changed = try compare()
+            try check(changed[paths[0].lastPathComponent]?.legacy["unknown"]?.input == 500 &&
+                      changed[paths[1].lastPathComponent]?.legacy["unknown"]?.input == 2, "追記・置換結果が不正")
         }
     }
 
