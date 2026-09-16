@@ -17,6 +17,9 @@ struct TokenMeterTests {
         try test("親スレッドのレコードを除外する", foreignThread)
         try test("フォークの親履歴を課金しない", forkHistory)
         try test("Codexエージェントを親チャットへ重複なく集計する", spawnedAgentGrouping)
+        try test("旧キャッシュの親子情報を先頭メタデータから復元する", cachedAgentMetadata)
+        try test("親のIDを誤保存した子キャッシュだけ再構築する", cachedAgentIdentity)
+        try test("子孫・アーカイブ重複・親不在の使用量を保持する", nestedAgentGrouping)
         try test("モデル変更を別料金で集計する", modelSwitch)
         try test("Claudeストリーミングを重複除去する", claudeStreaming)
         try test("追記途中とファイル縮小を処理する", partialLineAndTruncation)
@@ -155,6 +158,121 @@ struct TokenMeterTests {
         try check(rows[0].input == 300 && rows[0].members.count == 2, "親子の利用量を正しく合算しない")
         try check(rows[0].members[1].input == 100, "複製された親履歴を子の利用量に含めた")
         try check(rows[0].members[1].agentName == "Astra Worker", "エージェント名を保持しない")
+    }
+
+    static func agentLog(_ id: String, parent: String? = nil, input: Int64) throws -> Data {
+        var meta: [String: Any] = ["id": id, "cwd": "/tmp/synthetic-project"]
+        if let parent {
+            meta["source"] = ["subagent": ["thread_spawn": ["parent_thread_id": parent, "agent_nickname": "Worker"]]]
+        }
+        let records: [[String: Any]] = [
+            ["type": "session_meta", "payload": meta],
+            ["type": "turn_context", "payload": ["model": "gpt-test"]],
+            ["type": "token_usage_record", "timestamp": 1000, "payload": [
+                "thread_id": id, "response_id": id + "-own", "usage": usage(input)]],
+            event(usage(input))
+        ]
+        return try records.reduce(into: Data()) { data, record in
+            data.append(try JSONSerialization.data(withJSONObject: record)); data.append(0x0A)
+        }
+    }
+
+    struct TestSessionCache: Codable {
+        var version: Int
+        var files: [String: FileState]
+    }
+
+    static func cachedAgentMetadata() throws {
+        for version in 5...8 {
+            try temporary { root in
+                let c = collector(root: root)
+                let sessions = c.codexHome.appendingPathComponent("sessions")
+                try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+                let parent = sessions.appendingPathComponent("parent.jsonl")
+                let child = sessions.appendingPathComponent("child.jsonl")
+                try agentLog("parent", input: 200).write(to: parent)
+                try agentLog("child", parent: "parent", input: 100).write(to: child)
+                _ = try c.collect(live: false)
+                let cacheURL = c.stateDirectory.appendingPathComponent("sessions-cache.json")
+                var cache = try JSONDecoder().decode(TestSessionCache.self, from: Data(contentsOf: cacheURL))
+                cache.version = version
+                for key in Array(cache.files.keys) {
+                    cache.files[key]?.sessionMetaSeen = nil
+                    cache.files[key]?.parentID = nil
+                    cache.files[key]?.agentName = nil
+                    cache.files[key]?.forked = false
+                    // A sentinel proves migration reused counters/offsets instead of rescanning.
+                    cache.files[key]?.malformed = 7
+                }
+                try JSONEncoder().encode(cache).write(to: cacheURL)
+                let snapshot = try c.collect(live: false)
+                try check(snapshot.sessions.count == 1 && snapshot.sessions[0].members.count == 2,
+                          "version \(version) のキャッシュから子を復元しない")
+                try check(snapshot.sessions[0].input == 300 && snapshot.sessions[0].members[1].input == 100,
+                          "旧累計と子実績を重複加算した")
+                let repaired = try JSONDecoder().decode(TestSessionCache.self, from: Data(contentsOf: cacheURL))
+                try check(repaired.version == UsageCollector.cacheVersion, "キャッシュ形式を更新しない")
+                for (key, old) in cache.files {
+                    let new = repaired.files[key]!
+                    try check(new.requests == old.requests && new.offset == old.offset && new.malformed == 7,
+                              "正しい使用量を再走査した")
+                }
+                try check(repaired.files.values.first(where: { $0.id == "child" })?.parentID == "parent", "親IDを保存しない")
+                let unchanged = try c.collect(live: false)
+                try check(unchanged.sessions == snapshot.sessions, "移行後の再読で数値が変わる")
+                let handle = try FileHandle(forWritingTo: child)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: JSONSerialization.data(withJSONObject: [
+                    "type": "token_usage_record", "payload": ["thread_id": "child", "response_id": "next", "usage": usage(50)]
+                ]) + Data([0x0A]))
+                try handle.close()
+                let appended = try c.collect(live: false)
+                try check(appended.sessions[0].input == 350, "修復後の差分更新が不正")
+            }
+        }
+    }
+
+    static func cachedAgentIdentity() throws {
+        try temporary { root in
+            let c = collector(root: root)
+            let sessions = c.codexHome.appendingPathComponent("sessions")
+            try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+            let path = sessions.appendingPathComponent("child.jsonl")
+            try agentLog("child", parent: "parent", input: 100).write(to: path)
+            _ = try c.collect(live: false)
+            let cacheURL = c.stateDirectory.appendingPathComponent("sessions-cache.json")
+            var cache = try JSONDecoder().decode(TestSessionCache.self, from: Data(contentsOf: cacheURL))
+            cache.version = 8
+            let key = cache.files.keys.first!
+            cache.files[key]?.id = "parent"
+            cache.files[key]?.sessionMetaSeen = nil
+            cache.files[key]?.requests = [:]
+            cache.files[key]?.foreignRecords = true
+            try JSONEncoder().encode(cache).write(to: cacheURL)
+            let rows = try c.collect(live: false).sessions
+            try check(rows.count == 1 && rows[0].id == "child" && rows[0].input == 100,
+                      "誤ったIDのキャッシュを再構築しない")
+            try check(rows[0].parentID == "parent", "親不在時に関係を失った")
+        }
+    }
+
+    static func nestedAgentGrouping() throws {
+        try temporary { root in
+            let c = collector(root: root)
+            var states: [FileState] = []
+            for (id, parent, input) in [("root", nil, 200), ("child", "root", 100), ("grandchild", "child", 50)] as [(String, String?, Int64)] {
+                let path = root.appendingPathComponent(id + ".jsonl")
+                try agentLog(id, parent: parent, input: input).write(to: path)
+                states.append(try c.scanFile(path, provider: "codex"))
+            }
+            let rows = c.summarize(states + [states[1]], prices: prices)
+            try check(rows.count == 1 && rows[0].input == 350 && rows[0].members.count == 3,
+                      "子孫やアーカイブ複製を重複加算した")
+            try check(rows[0].members[2].parentID == "child", "孫の親が不明")
+            let orphan = c.summarize(Array(states.dropFirst()), prices: prices)
+            try check(orphan.count == 1 && orphan[0].input == 150 && orphan[0].parentID == "root",
+                      "親ログ不在で子の使用量が消えた")
+        }
     }
 
     static func modelSwitch() throws {
