@@ -727,7 +727,7 @@ struct ProviderStatusCard: View {
 
 struct SessionRow: View {
     let session: Session
-    @State private var expanded = false
+    @State private var expanded = CommandLine.arguments.contains("--render") && CommandLine.arguments.contains("--expanded")
     @State private var hovered = false
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -737,6 +737,10 @@ struct SessionRow: View {
                         HStack(spacing:5) {
                             Image(systemName:expanded ? "chevron.down" : "chevron.right").font(.system(size:9,weight:.semibold)).foregroundStyle(.secondary)
                             Text(session.title).lineLimit(1).help(session.title).font(.system(size:13,weight:.medium))
+                            if session.members.count > 1 {
+                                Text("子タスク \(session.members.count - 1)")
+                                    .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize()
+                            }
                         }
                         Text(dateText(session.updated) + " · " + session.models.map(\.model).joined(separator:", ")).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(1)
                     }.frame(maxWidth:.infinity,alignment:.leading)
@@ -748,10 +752,13 @@ struct SessionRow: View {
             if expanded {
                 VStack(alignment:.leading,spacing:8) {
                     Text(session.cwd.replacingOccurrences(of:FileManager.default.homeDirectoryForCurrentUser.path,with:"~")).font(.system(size:11)).foregroundStyle(.secondary).textSelection(.enabled)
+                    if let parentID = session.parentID {
+                        Text("親タスクID: " + parentID).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                    }
                     if session.members.count > 1 {
                         VStack(spacing: 0) {
                             HStack(spacing: 8) {
-                                Text("チャット内訳").frame(maxWidth: .infinity, alignment: .leading)
+                                Text("タスク内訳（一覧は親子の合計）").frame(maxWidth: .infinity, alignment: .leading)
                                 Text("入力").frame(width: 70, alignment: .trailing)
                                 Text("出力").frame(width: 58, alignment: .trailing)
                                 Text("参考 USD").frame(width: 70, alignment: .trailing)
@@ -764,6 +771,14 @@ struct SessionRow: View {
                                         Text(memberTitle(member, offset: offset)).lineLimit(1)
                                         Text(member.models.map(\.model).joined(separator: ", "))
                                             .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                                        if let parentID = member.parentID {
+                                            Text("親: " + parentTitle(parentID)).font(.system(size: 9)).foregroundStyle(.secondary)
+                                        }
+                                        Button("ID: " + String(member.id.prefix(8)) + "… をコピー") {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(member.id, forType: .string)
+                                        }.buttonStyle(.plain).font(.system(size: 9)).foregroundStyle(.secondary)
+                                            .help(member.id).accessibilityLabel("タスクIDをコピー: " + member.id)
                                     }.frame(maxWidth: .infinity, alignment: .leading)
                                     Text(compact(member.input)).frame(width: 70, alignment: .trailing)
                                     Text(compact(member.output)).frame(width: 58, alignment: .trailing)
@@ -809,10 +824,14 @@ struct SessionRow: View {
         }.frame(maxWidth:.infinity,alignment:.leading)
     }
     func memberTitle(_ member: SessionMemberUsage, offset: Int) -> String {
-        if offset == 0 { return "メイン" }
-        let base = "エージェント \(offset)"
+        if offset == 0 { return "親タスク" }
+        let base = "子タスク \(offset)"
         guard let name = member.agentName, !name.isEmpty else { return base }
         return base + " · " + name
+    }
+    func parentTitle(_ id: String) -> String {
+        guard let offset = session.members.firstIndex(where: { $0.id == id }) else { return id }
+        return memberTitle(session.members[offset], offset: offset)
     }
 }
 

@@ -293,7 +293,7 @@ enum FileScanExecutor {
 }
 
 final class UsageCollector: @unchecked Sendable {
-    static let cacheVersion = 8
+    static let cacheVersion = 9
 
     let stateDirectory: URL
     let codexHome: URL
@@ -338,11 +338,11 @@ final class UsageCollector: @unchecked Sendable {
         try ensurePrivateDirectory(stateDirectory)
         let cacheURL = stateDirectory.appendingPathComponent("sessions-cache.json")
         let cache = readCodable(SessionCache.self, from: cacheURL)
-        // Versions 5 through 7 have compatible persisted counters. Reuse them so a
-        // migration does not reread multi-gigabyte histories; only states that
-        // match the old spawned-thread identity bug are rebuilt below.
+        // Older caches can have valid counters but no session metadata, even at
+        // version 8 (which reused those entries). Repair headers before reusing
+        // offsets; otherwise unchanged logs never recover their parent links.
         let previousVersion = cache?.version ?? -1
-        let previous = [5, 6, 7, Self.cacheVersion].contains(previousVersion) ? cache?.files ?? [:] : [:]
+        let previous = [5, 6, 7, 8, Self.cacheVersion].contains(previousVersion) ? cache?.files ?? [:] : [:]
         var files: [String: FileState] = [:]
         var errors = Set<String>()
         let cutoff = Date().timeIntervalSince1970 - 30 * 86_400
@@ -357,12 +357,7 @@ final class UsageCollector: @unchecked Sendable {
                         let values = try path.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
                         guard values.isRegularFile != false, (values.contentModificationDate?.timeIntervalSince1970 ?? 0) >= cutoff else { continue }
                         let cached = previous[path.path]
-                        let lostSpawnIdentity = cached?.foreignRecords == true &&
-                            cached?.requests.isEmpty == true && cached?.legacy.isEmpty == false
-                        let missingSourceParent = cached?.agentName?.isEmpty == false && cached?.parentID == nil
-                        let mustRepairSpawnedThread = previousVersion < Self.cacheVersion && provider == "codex" &&
-                            (lostSpawnIdentity || missingSourceParent)
-                        jobs.append((path, provider, mustRepairSpawnedThread ? nil : cached))
+                        jobs.append((path, provider, cached))
                     } catch {
                         errors.insert(provider + ": 読み取れないログがあります")
                     }
@@ -372,7 +367,12 @@ final class UsageCollector: @unchecked Sendable {
 
         let results = FileScanExecutor.map(jobs, concurrency: scanConcurrency) { job in
             Result<FileState, Error> {
-                var state = try self.scanFile(job.path, provider: job.provider, previous: job.previous)
+                var previous = job.previous
+                if job.provider == "codex", previousVersion < Self.cacheVersion,
+                   let cached = previous, cached.sessionMetaSeen != true {
+                    previous = try self.restoringCodexMetadata(job.path, cached: cached)
+                }
+                var state = try self.scanFile(job.path, provider: job.provider, previous: previous)
                 if job.provider == "claude" && job.path.pathComponents.contains("subagents") {
                     state.id = job.path.deletingPathExtension().lastPathComponent
                     if state.title.isEmpty { state.title = "Subagent · " + String(state.id.suffix(8)) }
@@ -405,6 +405,34 @@ final class UsageCollector: @unchecked Sendable {
                         claude: claudeQuota(), errors: errors.sorted(),
                         pricingDate: officialPricing?.verified ?? bundledPricing?.verified ?? "",
                         scope: "このMacの直近30日以内に更新されたセッション · 数値は各セッションの累計")
+    }
+
+    private func restoringCodexMetadata(_ path: URL, cached: FileState) throws -> FileState? {
+        let handle = try FileHandle(forReadingFrom: path)
+        defer { try? handle.close() }
+        var header = Data()
+        while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                header.append(chunk[..<newline])
+                break
+            }
+            header.append(chunk)
+        }
+        guard let record = try? JSONSerialization.jsonObject(with: header) as? [String: Any],
+              string(record["type"]) == "session_meta" else { return nil }
+        var metadata = newState(for: path, provider: "codex")
+        consume(record, state: &metadata)
+        // A copied parent identity means the old counters may have rejected the
+        // child's own records. Only that file needs a full rebuild.
+        guard metadata.id == cached.id else { return nil }
+        var result = cached
+        result.sessionMetaSeen = metadata.sessionMetaSeen
+        result.parentID = metadata.parentID
+        result.agentName = metadata.agentName
+        result.forked = metadata.forked
+        result.internalSession = metadata.internalSession
+        result.cwd = metadata.cwd
+        return result
     }
 
     func consume(_ record: [String: Any], state: inout FileState) {
