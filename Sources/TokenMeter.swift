@@ -21,8 +21,8 @@ func providerColor(_ provider: String) -> Color {
 let sessionMetricWidth: CGFloat = 82
 
 enum PanelLayout {
-    static let width: CGFloat = 720
-    static let height: CGFloat = 780
+    static let width: CGFloat = 920
+    static let height: CGFloat = 980
 }
 
 // User-selected PNGs are bundled locally; AppKit adapts the black mark to the menu-bar appearance.
@@ -743,7 +743,8 @@ struct SessionRow: View {
                             Image(systemName:expanded ? "chevron.down" : "chevron.right").font(.system(size:9,weight:.semibold)).foregroundStyle(.secondary)
                             Text(session.title).lineLimit(1).help(session.title).font(.system(size:13,weight:.medium))
                             if session.members.count > 1 {
-                                Text("子タスク \(session.members.count - 1)")
+                                let subAgentCount = session.members.count - 1
+                                Text("\(subAgentCount) sub agent\(subAgentCount == 1 ? "" : "s")")
                                     .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize()
                             }
                         }
