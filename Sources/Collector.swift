@@ -293,7 +293,7 @@ enum FileScanExecutor {
 }
 
 final class UsageCollector: @unchecked Sendable {
-    static let cacheVersion = 9
+    static let cacheVersion = 10
 
     let stateDirectory: URL
     let codexHome: URL
@@ -342,7 +342,7 @@ final class UsageCollector: @unchecked Sendable {
         // version 8 (which reused those entries). Repair headers before reusing
         // offsets; otherwise unchanged logs never recover their parent links.
         let previousVersion = cache?.version ?? -1
-        let previous = [5, 6, 7, 8, Self.cacheVersion].contains(previousVersion) ? cache?.files ?? [:] : [:]
+        let previous = [5, 6, 7, 8, 9, Self.cacheVersion].contains(previousVersion) ? cache?.files ?? [:] : [:]
         var files: [String: FileState] = [:]
         var errors = Set<String>()
         let cutoff = Date().timeIntervalSince1970 - 30 * 86_400
@@ -375,6 +375,13 @@ final class UsageCollector: @unchecked Sendable {
                 var state = try self.scanFile(job.path, provider: job.provider, previous: previous)
                 if job.provider == "claude" && job.path.pathComponents.contains("subagents") {
                     state.id = job.path.deletingPathExtension().lastPathComponent
+                    // Claude stores children at <session UUID>/subagents/agent-*.jsonl.
+                    // Derive this on cached scans too, preserving usage and offsets.
+                    let directory = job.path.deletingLastPathComponent()
+                    let parent = directory.deletingLastPathComponent().lastPathComponent
+                    if directory.lastPathComponent == "subagents", UUID(uuidString: parent) != nil {
+                        state.parentID = parent
+                    }
                     if state.title.isEmpty { state.title = "Subagent · " + String(state.id.suffix(8)) }
                 }
                 return state
@@ -627,13 +634,14 @@ final class UsageCollector: @unchecked Sendable {
     }
 
     private func groupedAgentSessions(_ rows: [Session]) -> [Session] {
-        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        func key(_ row: Session) -> String { row.provider + ":" + row.id }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { (key($0), $0) })
         var children: [String: [Session]] = [:]
         var roots: [Session] = []
         for row in rows {
-            if row.provider == "codex", let parentID = row.parentID,
-               byID[parentID]?.provider == "codex", parentID != row.id {
-                children[parentID, default: []].append(row)
+            if let parentID = row.parentID,
+               byID[row.provider + ":" + parentID] != nil, parentID != row.id {
+                children[row.provider + ":" + parentID, default: []].append(row)
             } else {
                 roots.append(row)
             }
@@ -658,8 +666,8 @@ final class UsageCollector: @unchecked Sendable {
 
         var visited = Set<String>()
         func aggregate(_ row: Session) -> Session {
-            guard visited.insert(row.id).inserted else { return row }
-            let descendants = (children[row.id] ?? [])
+            guard visited.insert(key(row)).inserted else { return row }
+            let descendants = (children[key(row)] ?? [])
                 .sorted { $0.updated < $1.updated }
                 .map(aggregate)
             guard !descendants.isEmpty else { return row }
@@ -679,7 +687,7 @@ final class UsageCollector: @unchecked Sendable {
 
         var result = roots.map(aggregate)
         // Keep malformed cycles visible instead of silently discarding their usage.
-        result += rows.filter { !visited.contains($0.id) }.map(aggregate)
+        result += rows.filter { !visited.contains(key($0)) }.map(aggregate)
         return result
     }
 
@@ -800,6 +808,8 @@ final class UsageCollector: @unchecked Sendable {
             detail = installed
                 ? "連携済み・Claude Codeからの利用枠通知待ち。Pro/Maxの応答後に更新されます。接続先によっては通知されません"
                 : "「Claude連携」で使用率の通知を受け取れます。セッションのトークン集計は連携前でも利用できます"
+        } else if windows.contains(where: \.expired) {
+            detail = "前回の利用枠はリセット時刻を過ぎました。Claude Codeからの新しい通知待ちです。Claude Codeで応答後も変わらない場合は、利用状況ページで確認してください。更新ボタンは保存済み通知を読み直します"
         } else { detail = "Claude Codeからの最終通知。会話の応答時に更新されます" }
         return Quota(windows: windows, observed: observed, source: observed > 0 ? "Claude Code通知" : "未取得",
                      error: "", stale: now - observed > 600, detail: detail,

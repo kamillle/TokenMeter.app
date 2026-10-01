@@ -22,6 +22,7 @@ struct TokenMeterTests {
         try test("子孫・アーカイブ重複・親不在の使用量を保持する", nestedAgentGrouping)
         try test("モデル変更を別料金で集計する", modelSwitch)
         try test("Claudeストリーミングを重複除去する", claudeStreaming)
+        try test("Claudeの親子関係を既存キャッシュにも反映する", claudeAgentGrouping)
         try test("追記途中とファイル縮小を処理する", partialLineAndTruncation)
         try test("オフライン集計を差分更新する", offlineCollection)
         try test("ファイル走査を上限内で並列実行する", boundedFileScanning)
@@ -368,6 +369,46 @@ struct TokenMeterTests {
         try check(values == (0..<20).map { $0 * 2 }, "結果が欠落・重複した、または順序が変わった")
         let empty: [Int] = FileScanExecutor.map([], concurrency: 4) { $0 }
         try check(empty.isEmpty, "空の入力を処理できない")
+    }
+
+    static func claudeAgentGrouping() throws {
+        try temporary { root in
+            let claude = root.appendingPathComponent("claude")
+            let c = UsageCollector(stateDirectory: root.appendingPathComponent("state"),
+                                   codexHome: root.appendingPathComponent("codex"), claudeHome: claude)
+            let parentID = "11111111-1111-4111-8111-111111111111"
+            let project = claude.appendingPathComponent("projects/project")
+            let parent = project.appendingPathComponent(parentID + ".jsonl")
+            let child = project.appendingPathComponent(parentID + "/subagents/agent-child.jsonl")
+            try FileManager.default.createDirectory(at: child.deletingLastPathComponent(), withIntermediateDirectories: true)
+            func record(_ input: Int) throws -> Data {
+                try JSONSerialization.data(withJSONObject: ["type": "assistant", "sessionId": parentID,
+                    "timestamp": 1000, "message": ["id": "same-response-id", "model": "claude-test",
+                    "usage": ["input_tokens": input, "output_tokens": 10]]]) + Data([0x0A])
+            }
+            try record(200).write(to: parent)
+            try record(100).write(to: child)
+            let first = try c.collect(live: false)
+            try check(first.sessions.count == 1 && first.sessions[0].input == 300, "Claude親子を合算しない")
+            try check(first.sessions[0].members.count == 2 && first.sessions[0].members[1].parentID == parentID, "子の内訳・親IDを失った")
+            let cacheURL = c.stateDirectory.appendingPathComponent("sessions-cache.json")
+            var cache = try JSONDecoder().decode(TestSessionCache.self, from: Data(contentsOf: cacheURL))
+            let childKey = cache.files.first(where: { $0.value.id == "agent-child" })!.key
+            let offset = cache.files[childKey]!.offset
+            cache.version = 9
+            cache.files[childKey]?.parentID = nil
+            try JSONEncoder().encode(cache).write(to: cacheURL)
+            let restored = try c.collect(live: false)
+            try check(restored.sessions.count == 1 && restored.sessions[0].input == 300, "既存キャッシュの親子を復元しない")
+            let repaired = try JSONDecoder().decode(TestSessionCache.self, from: Data(contentsOf: cacheURL))
+            try check(repaired.files[childKey]?.offset == offset, "差分位置を失った")
+            try FileManager.default.removeItem(at: parent)
+            let orphan = try c.collect(live: false)
+            try check(orphan.sessions.count == 1 && orphan.sessions[0].input == 100 && orphan.sessions[0].parentID == parentID, "親不在の子を失った")
+            try json(["observed": 1000, "rate_limits": ["seven_day": ["used_percentage": 15, "resets_at": 2000]]], to: c.stateDirectory.appendingPathComponent("claude-status.json"))
+            let quota = c.claudeQuota(now: 3000)
+            try check(quota.windows[0].expired && quota.detail.contains("新しい通知待ち"), "期限切れの説明がない")
+        }
     }
 
     static func parallelCollection() throws {
