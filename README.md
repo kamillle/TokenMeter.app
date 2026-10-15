@@ -27,7 +27,7 @@ Codexの残り利用枠と、セッション別のトークン使用量・参考
 - **セッション別の使用量** — 入力・出力トークン数、キャッシュの内訳、モデル別の参考料金を確認。
 - **検索・絞り込み・並び替え** — セッションの最終使用日時で絞り込み、トークン数や参考料金で並び替え。
 - **サービスの稼働情報** — OpenAI／Anthropicの公式ステータスと進行中のインシデントを表示。
-- **Claude Code連携** — 既存のステータスライン表示を維持して利用枠を取得。
+- **Claude Code連携** — ログイン済みCLIから利用枠を定期取得。statusLineの設定や会話は不要。
 - **ログイン時の自動起動** — アプリ内の設定から切り替え。
 
 ## 動作環境
@@ -38,7 +38,7 @@ Codexの残り利用枠と、セッション別のトークン使用量・参考
 | CPU | Apple Silicon（現在のビルド対象） |
 | ビルド | XcodeまたはCommand Line Tools |
 | Codexの利用枠取得 | ログイン済みのCodex CLI |
-| Claudeの利用枠取得 | Claude Codeと、利用枠を含むstatusLine通知 |
+| Claudeの利用枠取得 | `get_usage` に対応したログイン済みClaude CLI（2.1.300で実機検証） |
 
 ビルド済みアプリの実行にPythonや開発ツールは不要です。Codex CLIがなくても、アプリとClaude側の機能は動作します。UIは日本語、参考料金はUSDで表示します。
 
@@ -89,14 +89,17 @@ TOKENMETER_INSTALL_DIR="$HOME/Applications" bash install.sh
 
 入力／出力／参考USDの見出しをクリックすると昇順・降順が切り替わります。見出し左の矢印ボタンで並び替えを解除すると、更新日時順に戻ります。一覧下部には表示中セッションの累計を表示します。
 
-### Claude連携を有効にする
+### Claudeの利用枠を取得する
 
-歯車メニューから「Claude連携を有効にする」を選び、Claude Codeで応答を受け取ってください。利用枠を含む公式statusLine通知を受け取ると表示が更新されます。
+Claude Codeにサブスクリプションでログインしておくと、TokenMeterがCLIの `get_usage` から利用枠を取得します。通常1分ごと、および更新ボタンで取得し、statusLineの設定や会話の実行は不要です。CLIが標準の場所にない場合は `TOKENMETER_CLAUDE` で実行ファイルを指定できます。
 
-- 変更する設定はClaude Codeの `settings.json` の `statusLine` 項目です。既存コマンドをラップし、その表示と他の設定を維持します。
-- 連携解除時は元の `statusLine` を復元します。ユーザーが後から別の設定に変更した場合は上書きしません。
-- Pro／Maxでも応答後の通知を待つ場合があります。API・プロキシ等の接続先では利用枠が通知されない場合があります。
-- 通知前は「未取得／通知待ち」となります。ローカルログがあればトークン数と参考料金の集計は利用できます。
+- 通信にはCLIのJSON制御チャンネルを使います。送るのは `initialize` と `get_usage` だけで、モデルへのプロンプトは送りません。認証情報の読み出し・更新はCLIに任せます。
+- 取得用プロセスではユーザー・プロジェクト設定の読み込み、フック、MCP接続を抑止します。`skip_behaviors: true` により利用履歴の追加走査も省略します。PythonやNode.jsを追加インストールする必要はありません。
+- `get_usage` は公式Agent SDKで公開された実験的な機能です。CLIの仕様変更、未対応バージョン、未ログイン、APIキー・外部プロバイダー利用時などは取得できない場合があります。
+- 取得失敗や空の応答では前回値と取得時刻を保持します。連続失敗時の自動再試行間隔は1分から最大10分まで延ばし、更新ボタンは即時再試行します。10分以上前の値は古い値として表示し、期限切れの枠は100%と推測しません。
+- モデル専用の週間枠は「ほかのモデル別利用枠」に表示し、メニューバーの主要枠と混同しません。
+
+既存のstatusLine連携は任意の補助として残っています。歯車メニューの「Claude通知の補助連携を有効にする」で設定でき、直接取得に失敗した際に前回の直接取得より新しい通知があれば使用します。変更する設定は `statusLine` だけで、既存表示を維持し、解除時は元の設定を復元します。空の通知では前回値を消しません。直接取得のためにこの連携を有効にする必要はありません。
 
 ## 表示と集計の仕様
 
@@ -114,23 +117,25 @@ TOKENMETER_INSTALL_DIR="$HOME/Applications" bash install.sh
 | サービス | 既定の読み取り先 | 補足 |
 | --- | --- | --- |
 | Codexアプリ／CLI | `~/.codex/sessions`、`~/.codex/archived_sessions` | `CODEX_HOME` 指定時はその配下。起動したエージェントは親チャットに合算し、展開時に個別表示。Guardian内部レビューは除外 |
-| Claude Code | `~/.claude/projects` | `CLAUDE_CONFIG_DIR` 指定時はその配下。サブエージェントは別行 |
+| Claude Code | `~/.claude/projects` | `CLAUDE_CONFIG_DIR` 指定時はその配下。サブエージェントは親の行に合算し、展開時に個別表示。親が集計対象外の場合は別行 |
 
 対象は**直近30日以内に更新されたローカルログ**です。「今日更新」「7日以内」「30日以内」はセッションの最終使用日時による絞り込みであり、表示値は各セッション全体の累計です。指定期間内だけの消費量ではありません。
 
 通常のClaudeチャット、ブラウザだけに存在する会話、別端末やリモート環境だけにあるログは対象外です。Codexの累計スナップショットやClaudeのストリーミング応答など、同一使用量の重複を除いて集計します。
 
+Claudeの親子関係は `<親セッションID>/subagents/` の保存先から復元します。既存キャッシュにも全ログの再読み込みなしで反映します。
+
 Codexの親子関係は子ログ先頭の `session_meta` から取得します。一覧の「N sub agents」を含む行を展開すると、親・子それぞれの使用量、参考料金、モデル、親との関係、IDのコピーボタンを確認できます。一覧の数値は親子の合計です。古いキャッシュで欠けていた親子情報はログ先頭から補完し、通常は保存済みの使用量と差分読み取り位置を維持します。`collabAgentToolCall` の呼び出し履歴だけから使用量を推定することはなく、対象期間内の子ログに使用実績がない場合は内訳に表示されません。
 
 ### 更新タイミング
 
-Claude連携は公式の `statusLine.refreshInterval` を60秒に設定します。これは通知コマンドの定期実行であり、サーバーへの毎分の問い合わせを保証しません。Claude Codeが保持する値の遅れは残る場合があります。連携解除時は更新間隔を含む元のstatusLine設定を復元します。
+CodexとClaudeの利用枠はCLI経由で通常1分ごとに取得し、更新ボタンは両方の直接取得を要求します。取得処理はバックグラウンドで行います。任意のClaude通知連携は60秒ごとの通知も受け取りますが、直接取得に成功している間はそちらを優先します。
 
 | データ | 更新タイミング |
 | --- | --- |
 | ローカルログ | 30秒ごと。初回走査・差分読み取りはファイル単位で最大4並列。未変更ログはキャッシュを再利用 |
 | Codexの利用枠・アカウント情報 | 通常1分ごと、および更新ボタン操作時 |
-| Claudeの利用枠 | 応答時および60秒ごとのstatusLine通知。TokenMeterは30秒ごとに読み込み |
+| Claudeの利用枠 | 通常1分ごと、および更新ボタン操作時。連続失敗時は最大10分間隔 |
 | 公式ステータス | 起動時、5分ごと、Status画面への切り替え時、更新ボタン操作時 |
 | 公式単価 | 起動中に通常1日1回確認。取得失敗時は再試行 |
 
@@ -171,7 +176,7 @@ APIの公開単価を使い、**標準処理・短コンテキスト**の条件�
 保存するデータは次のとおりです。
 
 - セッション名・作業ディレクトリ・使用量などの集計メタデータ
-- CodexのアカウントID（メールアドレス）と利用枠、Claudeの利用枠通知から取得した使用率・時刻
+- Codex／ClaudeのアカウントIDと利用枠・取得時刻。Claudeの直接取得キャッシュは `claude-quota.json`、補助通知は `claude-status.json` に保存
 - Claude連携設定と、復元用の元のstatusLine項目
 - ユーザー単価、自動取得した単価、単価確認の日時・結果
 
@@ -183,7 +188,9 @@ APIの公開単価を使い、**標準処理・短コンテキスト**の条件�
 
 ### Claudeのロゴや利用枠が表示されない
 
-連携を有効にしただけでは、メニューバーにロゴは表示されません。利用枠を含むstatusLine通知を受信する必要があります。[Claude連携](#claude連携を有効にする)を確認してください。
+まず更新ボタンで再取得してください。エラーが出た場合はClaude CLIのインストール、バージョン、サブスクリプションでのログイン状態を確認してください。`get_usage` に未対応のCLIは更新が必要です。statusLineやmacOSの通知設定を有効にする必要はありません。
+
+「更新待ち」は、前回取得した利用枠のリセット時刻を過ぎた状態です。残り100%とは推測せず、新しい取得値を待ちます。取得失敗時は前回値を表示するため、画面の取得元・取得時刻・エラーを確認してください。「Claudeの利用状況を開く」でも利用枠を確認できます。
 
 ### Codexの利用枠が更新されない
 
@@ -210,7 +217,8 @@ bash Tests/run.sh
 | `Sources/PricingUpdater.swift` | 公式単価の取得・更新 |
 | `Sources/ProviderStatus.swift` | 公式ステータスの取得 |
 | `Sources/SessionSorting.swift` | セッション一覧の並び替え |
-| `Sources/ClaudeBridge.swift`、`Sources/BridgeManager.swift` | Claude連携と設定の復元 |
+| `Sources/ClaudeUsageClient.swift` | Claude CLIの制御通信・直接取得・利用枠の正規化 |
+| `Sources/ClaudeQuotaCapture.swift`、`Sources/ClaudeBridge.swift`、`Sources/BridgeManager.swift` | 任意のClaude通知連携・保存・設定の復元 |
 | `Sources/pricing.json`、`Sources/Assets/` | 同梱単価・画像リソース |
 | `Tests/` | 合成ログと一時設定を使う回帰テスト |
 | `build.sh`、`install.sh` | ビルド・署名・ローカルインストール |
@@ -224,6 +232,7 @@ bash Tests/run.sh
 - [Codex App Server](https://developers.openai.com/codex/app-server#auth-endpoints)
 - [OpenAI API料金](https://developers.openai.com/api/docs/pricing)
 - [OpenAI Status](https://status.openai.com/)
+- [Claude Agent SDK get_usageの追加](https://github.com/anthropics/claude-agent-sdk-typescript/releases/tag/v0.3.169)
 - [Claude Code statusLine](https://code.claude.com/docs/en/statusline)
 - [Claude API料金](https://platform.claude.com/docs/en/about-claude/pricing)
 - [Anthropic Status](https://status.anthropic.com/)

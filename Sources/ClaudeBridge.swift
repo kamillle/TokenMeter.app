@@ -20,11 +20,16 @@ struct ClaudeBridgeMain {
     }
 
     private static func captureQuota(from object: [String: Any]) {
-        let capture: [String: Any] = [
-            "observed": Date().timeIntervalSince1970,
-            "rate_limits": object["rate_limits"] as? [String: Any] ?? [:]
-        ]
-        try? atomicWrite(capture, to: stateDirectory.appendingPathComponent("claude-status.json"))
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let accountFile: URL
+        if let directory = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] {
+            accountFile = URL(fileURLWithPath: directory).appendingPathComponent(".claude.json")
+        } else { accountFile = home.appendingPathComponent(".claude.json") }
+        let account = readObject(accountFile)?["oauthAccount"] as? [String: Any] ?? [:]
+        let accountID = ["emailAddress", "accountUuid"].compactMap {
+            (account[$0] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.first { !$0.isEmpty }
+        try? ClaudeQuotaCapture.save(object, directory: stateDirectory, accountID: accountID)
     }
 
     private static func runOriginalCommand(with input: Data) -> Int32? {
@@ -59,16 +64,4 @@ struct ClaudeBridgeMain {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    private static func atomicWrite(_ object: [String: Any], to url: URL) throws {
-        let manager = FileManager.default
-        try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.deletingLastPathComponent().path)
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
-        let temporary = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".\(getpid()).tmp")
-        try data.write(to: temporary)
-        try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        guard Darwin.rename(temporary.path, url.path) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-    }
 }

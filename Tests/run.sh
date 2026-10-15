@@ -5,7 +5,10 @@ TEST_BUILD="$(mktemp -d "${TMPDIR:-/tmp}/tokenmeter-tests.XXXXXX")"
 trap 'rm -rf "$TEST_BUILD"' EXIT
 mkdir -p "$TEST_BUILD/module-cache"
 swiftc -parse-as-library -swift-version 5 -module-cache-path "$TEST_BUILD/module-cache" \
-  "$ROOT/Sources/Collector.swift" "$ROOT/Sources/PricingUpdater.swift" "$ROOT/Sources/ProviderStatus.swift" "$ROOT/Sources/SessionSorting.swift" "$ROOT/Sources/BridgeManager.swift" "$ROOT/Tests/TokenMeterTests.swift" \
+  "$ROOT/Sources/ClaudeQuotaCapture.swift" "$ROOT/Sources/ClaudeUsageClient.swift" "$ROOT/Sources/Collector.swift" "$ROOT/Sources/PricingUpdater.swift" "$ROOT/Sources/ProviderStatus.swift" "$ROOT/Sources/SessionSorting.swift" "$ROOT/Sources/BridgeManager.swift" "$ROOT/Tests/TokenMeterTests.swift" \
   -o "$TEST_BUILD/TokenMeterTests"
+swiftc -parse-as-library -swift-version 5 -module-cache-path "$TEST_BUILD/module-cache" \
+  "$ROOT/Sources/ClaudeQuotaCapture.swift" "$ROOT/Sources/ClaudeBridge.swift" \
+  -o "$TEST_BUILD/TokenMeterClaudeBridge"
 cd "$ROOT"
-"$TEST_BUILD/TokenMeterTests"
+"$TEST_BUILD/TokenMeterTests" "$TEST_BUILD/TokenMeterClaudeBridge"
