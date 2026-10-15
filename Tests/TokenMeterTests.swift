@@ -11,6 +11,10 @@ struct TokenMeterTests {
     static var passed = 0
 
     static func main() throws {
+        if let mode = ProcessInfo.processInfo.environment["TOKENMETER_TEST_CLAUDE_MODE"] {
+            try mockClaude(mode: mode)
+            return
+        }
         try test("累計スナップショットを重複加算しない", cumulativeSnapshots)
         try test("新旧トークンイベントを重複加算しない", newAndOldEvents)
         try test("旧形式からの移行分を保持する", migrationResidual)
@@ -33,6 +37,13 @@ struct TokenMeterTests {
         try test("ClaudeアカウントIDを読み取り変更・欠落を反映する", claudeAccountID)
         try test("公式ステータスと進行中インシデントを読む", providerStatusParsing)
         try test("連携状態を正しく判定する", providerLinkState)
+        try test("Claude直接取得の主要枠・モデル別枠・欠落を読む", claudeDirectParsing)
+        try test("Claudeを定期取得し失敗・期限切れ・アカウント変更に対応する", claudeDirectRefresh)
+        try test("Claude直接取得と補助通知の優先順位を守る", claudeDirectFallback)
+        try test("Claude制御通信でモデルを呼ばず終了とタイムアウトを処理する", claudeDirectProtocol)
+        try test("Claudeの空・部分通知で前回値と時刻を保持する", claudeQuotaRetention)
+        try test("Claudeの通知停止・空通知・期限切れを区別する", claudeNotificationDiagnostics)
+        try test("Claudeヘルパーの実行と並列保存を検証する", claudeBridgeExecution)
         try test("Claude設定を保持して復元する", bridgePreservesSettings)
         try test("旧ClaudeブリッジをSwift版へ移行する", bridgeMigratesLegacyHelper)
         try test("旧名のSwift連携を更新して元の設定を復元する", bridgeMigratesRenamedHelper)
@@ -563,6 +574,222 @@ struct TokenMeterTests {
             let now = Date().timeIntervalSince1970
             try json(["observed": now, "rate_limits": ["five_hour": ["used_percentage": 10, "resets_at": now + 3600]]], to: state.appendingPathComponent("claude-status.json"))
             try check(c.claudeQuota().linked == true, "Claude通知を検出しない")
+        }
+    }
+
+    static func directPayload(_ used: Double = 25) -> [String: Any] {
+        ["rate_limits_available": true, "rate_limits": [
+            "five_hour": ["utilization": used, "resets_at": "2030-01-01T00:00:00.000+00:00"],
+            "seven_day": ["utilization": 10, "resets_at": "2030-01-02T00:00:00Z"],
+            "model_scoped": [["display_name": "Opus", "utilization": 99, "resets_at": "2030-01-03T00:00:00Z"]],
+            "seven_day_opus": ["utilization": 99, "resets_at": "2030-01-03T00:00:00Z"]],
+         "behaviors": ["synthetic_private_field": "do not cache"],
+         "session": ["total_cost_usd": 0, "model_usage": [:]]]
+    }
+
+    static func claudeDirectParsing() throws {
+        let windows = try ClaudeUsageClient.windows(from: directPayload(0), observed: 1000)
+        try check(windows.count == 3, "モデル別枠を重複または欠落させた")
+        try check(windows[0].remaining == 100 && windows[0].resetsAt == 1893456000, "使用率0またはISO時刻を読めない")
+        let quota = Quota(windows: windows, observed: 1000, source: "", error: "", stale: false, detail: "")
+        try check(quota.limiting?.remaining == 90, "モデル専用枠を主要枠と混同した")
+        for payload: [String: Any] in [[:], ["rate_limits_available": false], ["rate_limits_available": true, "rate_limits": ["five_hour": ["utilization": NSNull()]]], ["rate_limits_available": true, "rate_limits": ["five_hour": ["utilization": true]]]] {
+            do { _ = try ClaudeUsageClient.windows(from: payload, observed: 1000); throw TestFailure.failed("欠落値を0として表示した") }
+            catch is ClaudeUsageError {}
+        }
+    }
+
+    static func claudeDirectRefresh() throws {
+        try temporary { root in
+            let c = collector(root: root)
+            var calls = 0
+            func fetch() throws -> [String: Any] { calls += 1; return directPayload() }
+            let first = c.claudeQuota(live: true, now: 1000, fetch: fetch)
+            try check(first.source == "Claude Code直接取得" && first.linked == true && first.bridgeInstalled == false, "通知連携なしで直接取得できない")
+            _ = c.claudeQuota(live: true, now: 1030, fetch: fetch)
+            try check(calls == 1, "1分以内に再取得した")
+            let same = c.claudeQuota(live: true, now: 1060, fetch: fetch)
+            try check(calls == 2 && same.observed == 1060, "直接再取得した同じ値の時刻を更新しない")
+            _ = c.claudeQuota(live: true, force: true, now: 1061, fetch: fetch)
+            try check(calls == 3, "手動更新で直接取得しない")
+            func fail() throws -> [String: Any] { calls += 1; throw ClaudeUsageError.timeout }
+            let failed = c.claudeQuota(live: true, now: 1121, fetch: fail)
+            try check(failed.windows.count == 3 && failed.observed == 1061 && !failed.error.isEmpty, "失敗時に前回値を失った")
+            _ = c.claudeQuota(live: true, now: 1181, fetch: fail)
+            let count = calls
+            _ = c.claudeQuota(live: true, now: 1241, fetch: fail)
+            try check(calls == count, "連続失敗時の待機間隔が伸びない")
+            let stale = c.claudeQuota(now: 2000)
+            try check(stale.stale && stale.observed == 1061, "失敗で古い値を新しくした")
+            let expired = c.claudeQuota(now: 2000000000)
+            try check(expired.windows.allSatisfy(\.expired) && expired.limiting == nil, "期限切れを100%と推測した")
+            let cached = try readJSON(c.stateDirectory.appendingPathComponent("claude-quota.json"))
+            try check(cached["behaviors"] == nil && cached["session"] == nil && cached["rate_limits"] == nil, "生の応答を保存した")
+            try FileManager.default.createDirectory(at: c.claudeHome, withIntermediateDirectories: true)
+            try json(["oauthAccount": ["emailAddress": "new@example.com"]], to: c.claudeAccountFile)
+            let changed = c.claudeQuota(now: 2000)
+            try check(changed.windows.isEmpty, "別アカウントのキャッシュを表示した")
+            let switchedDuringFetch = c.claudeQuota(live: true, force: true, now: 2001, fetch: {
+                try json(["oauthAccount": ["emailAddress": "other@example.com"]], to: c.claudeAccountFile)
+                return directPayload()
+            })
+            try check(switchedDuringFetch.windows.isEmpty && !switchedDuringFetch.error.isEmpty, "取得中のアカウント変更を検出しない")
+            let recovered = c.claudeQuota(live: true, force: true, now: 2002, fetch: fetch)
+            try check(recovered.error.isEmpty && recovered.accountID == "other@example.com", "新アカウントで復帰しない")
+        }
+    }
+
+    static func claudeDirectFallback() throws {
+        try temporary { root in
+            let c = collector(root: root)
+            _ = c.claudeQuota(live: true, now: 1000, fetch: { directPayload() })
+            try json(["observed": 1100, "rate_limits": ["five_hour": ["used_percentage": 90, "resets_at": 3000]]], to: c.stateDirectory.appendingPathComponent("claude-status.json"))
+            try check(c.claudeQuota(now: 1101).source == "Claude Code直接取得", "正常な直接取得を通知で上書きした")
+            let fallback = c.claudeQuota(live: true, now: 1101, fetch: { throw ClaudeUsageError.timeout })
+            try check(fallback.source == "Claude Code通知" && fallback.observed == 1100 && !fallback.error.isEmpty, "失敗時に新しい補助通知を使わない")
+            let restored = c.claudeQuota(live: true, force: true, now: 1102, fetch: { directPayload() })
+            try check(restored.source == "Claude Code直接取得" && restored.error.isEmpty, "直接取得の復帰に失敗した")
+            let empty = c.claudeQuota(live: true, force: true, now: 1103, fetch: { ["rate_limits_available": true, "rate_limits": [:]] })
+            try check(empty.windows.count == 3 && empty.observed == 1102 && !empty.error.isEmpty, "空の成功応答で前回値を消した")
+        }
+    }
+
+    static func mockClaude(mode: String) throws {
+        if mode == "exit" { return }
+        if mode == "timeout" { usleep(2_000_000); return }
+        let args = CommandLine.arguments
+        guard args.contains("--no-session-persistence"), args.contains("--strict-mcp-config"), args.contains("{\"disableAllHooks\":true}") else { return }
+        var initialized = false
+        while let line = readLine() {
+            guard let request = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  request["type"] as? String == "control_request",
+                  let id = request["request_id"] as? String, let body = request["request"] as? [String: Any],
+                  let subtype = body["subtype"] as? String else { return }
+            var result: [String: Any] = [:]
+            if subtype == "initialize" { initialized = true }
+            else if subtype == "get_usage", initialized, body["skip_behaviors"] as? Bool == true { result = directPayload() }
+            else { return } // Any model prompt or other operation fails the protocol test.
+            let response: [String: Any] = ["type": "control_response", "response": ["request_id": id, "subtype": mode == "unsupported" ? "error" : "success", "response": result]]
+            let data = try JSONSerialization.data(withJSONObject: response) + Data([0x0A])
+            // Exercise split JSONL reads and irrelevant output.
+            try FileHandle.standardOutput.write(contentsOf: Data("{\"type\":\"system\"}\n".utf8))
+            try FileHandle.standardOutput.write(contentsOf: data.prefix(12))
+            try FileHandle.standardOutput.write(contentsOf: data.dropFirst(12))
+        }
+    }
+
+    static func claudeDirectProtocol() throws {
+        let executable = URL(fileURLWithPath: CommandLine.arguments[0])
+        var client = ClaudeUsageClient(executableOverride: executable, timeout: 2,
+                                      environment: ["TOKENMETER_TEST_CLAUDE_MODE": "success"])
+        let result = try client.fetch()
+        try check(result["rate_limits_available"] as? Bool == true, "制御応答を取得できない")
+        for mode in ["unsupported", "exit", "timeout"] {
+            client.environment["TOKENMETER_TEST_CLAUDE_MODE"] = mode
+            client.timeout = 0.2
+            do { _ = try client.fetch(); throw TestFailure.failed("CLIの異常を成功扱いした: " + mode) }
+            catch is ClaudeUsageError {}
+        }
+    }
+
+    static func claudeQuotaRetention() throws {
+        let first: [String: Any] = ["rate_limits": [
+            "five_hour": ["used_percentage": 0, "resets_at": 2000],
+            "seven_day": ["used_percentage": 20, "resets_at": 9000]]]
+        let initial = ClaudeQuotaCapture.merging(first, previous: [:], now: 1000, accountID: "a")
+        let empty = ClaudeQuotaCapture.merging([:], previous: initial, now: 1500, accountID: "a")
+        try check(NSDictionary(dictionary: empty["rate_limits"] as! [String: Any]).isEqual(to: initial["rate_limits"] as! [String: Any]), "空通知で利用枠を消した")
+        try close(empty["observed"] as? Double, 1000, "空通知で取得時刻を進めた")
+        try close(empty["last_notification"] as? Double, 1500, "通知時刻を記録しない")
+        let replay = ClaudeQuotaCapture.merging(first, previous: empty, now: 1700, accountID: "a")
+        try close(replay["observed"] as? Double, 1000, "同じ値の再通知を新しい取得と扱った")
+        let partial = ClaudeQuotaCapture.merging(["rate_limits": ["five_hour": ["used_percentage": 10, "resets_at": 2000]]], previous: replay, now: 1800, accountID: "a")
+        let times = partial["window_observed"] as! [String: Any]
+        try close(times["five_hour"] as? Double, 1800, "変更枠の取得時刻が更新されない")
+        try close(times["seven_day"] as? Double, 1000, "欠落枠の取得時刻を進めた")
+        let malformed = ClaudeQuotaCapture.merging(["rate_limits": ["five_hour": ["used_percentage": true], "seven_day": ["used_percentage": -1]]], previous: partial, now: 1900, accountID: "a")
+        try check(NSDictionary(dictionary: malformed["rate_limits"] as! [String: Any]).isEqual(to: partial["rate_limits"] as! [String: Any]), "不正な通知で上書きした")
+        try check(ClaudeQuotaCapture.window(["used_percentage": NSNull()]) == nil, "nullを0と扱った")
+        let switched = ClaudeQuotaCapture.merging([:], previous: partial, now: 2000, accountID: "b")
+        try check((switched["rate_limits"] as! [String: Any]).isEmpty, "別アカウントに前回値を引き継いだ")
+        let logout = ClaudeQuotaCapture.merging([:], previous: partial, now: 2000)
+        try check((logout["rate_limits"] as! [String: Any]).isEmpty, "ログアウト後に前回値を引き継いだ")
+        let legacy: [String: Any] = ["observed": 500, "rate_limits": first["rate_limits"]!]
+        let migrated = ClaudeQuotaCapture.merging([:], previous: legacy, now: 2000)
+        try close(migrated["observed"] as? Double, 500, "旧保存形式の時刻を失った")
+        try check((migrated["version"] as? Int) == 2, "保存形式の移行を記録しない")
+    }
+
+    static func claudeNotificationDiagnostics() throws {
+        try temporary { root in
+            let c = collector(root: root)
+            try FileManager.default.createDirectory(at: c.stateDirectory, withIntermediateDirectories: true)
+            try json(["installed": true], to: c.stateDirectory.appendingPathComponent("bridge-config.json"))
+            let url = c.stateDirectory.appendingPathComponent("claude-status.json")
+            let empty = ClaudeQuotaCapture.merging([:], previous: [:], now: 1000)
+            try json(empty, to: url)
+            let noQuota = c.claudeQuota(now: 1100)
+            try check(noQuota.windows.isEmpty && noQuota.observed == 0 && noQuota.detail.contains("利用枠が含まれていません"), "空通知を判別しない")
+            try check(noQuota.lastNotification == 1000, "通知時刻を返さない")
+            try check(c.claudeQuota(now: 2000).detail.contains("通知が届いていません"), "停止した通知を判別しない")
+            let valid = ClaudeQuotaCapture.merging(["rate_limits": ["five_hour": ["used_percentage": 0, "resets_at": 2000], "seven_day": ["used_percentage": 50, "resets_at": 9000]]], previous: [:], now: 1000)
+            let missing = ClaudeQuotaCapture.merging([:], previous: valid, now: 1800)
+            try json(missing, to: url)
+            let stale = c.claudeQuota(now: 1800)
+            try check(stale.windows.count == 2 && stale.stale && stale.observed == 1000, "空通知で古い値を新しい値にした")
+            try check(stale.windows.first?.remaining == 100, "使用率0を未取得扱いした")
+            let expired = c.claudeQuota(now: 2100)
+            try check(expired.windows.first?.expired == true && expired.limiting?.label == "7日", "期限切れ枠を主要枠にした")
+            try check(expired.detail.contains("新しい通知待ち"), "期限切れを通知しない")
+            var other = valid; other["account_id"] = "other@example.com"
+            try json(other, to: url)
+            try check(c.claudeQuota(now: 1100).windows.isEmpty, "別アカウントの保存値を表示した")
+            // Legacy empty captures were notification timestamps, not quota timestamps.
+            try json(["observed": 1000, "rate_limits": [:]], to: url)
+            try check(c.claudeQuota(now: 1100).observed == 0, "旧空通知を利用枠の取得と誤認した")
+        }
+    }
+
+    static func claudeBridgeExecution() throws {
+        guard CommandLine.arguments.count > 1 else { throw TestFailure.failed("検証用ヘルパーが指定されていません") }
+        try temporary { root in
+            let state = root.appendingPathComponent("state")
+            let profile = root.appendingPathComponent("profile")
+            try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+            try json(["installed": true, "original": ["type": "command", "command": "cat"]], to: state.appendingPathComponent("bridge-config.json"))
+            func start(_ payload: [String: Any]) throws -> (Process, Pipe, Data) {
+                let data = try JSONSerialization.data(withJSONObject: payload)
+                let process = Process(), input = Pipe(), output = Pipe()
+                process.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
+                var environment = ProcessInfo.processInfo.environment
+                environment["TOKENMETER_STATE_DIR"] = state.path
+                environment["CLAUDE_CONFIG_DIR"] = profile.path
+                process.environment = environment
+                process.standardInput = input; process.standardOutput = output
+                try process.run()
+                try input.fileHandleForWriting.write(contentsOf: data)
+                try input.fileHandleForWriting.close()
+                return (process, output, data)
+            }
+            var jobs: [(Process, Pipe, Data)] = []
+            for index in 0..<12 {
+                let key = index % 2 == 0 ? "five_hour" : "seven_day"
+                jobs.append(try start(["rate_limits": [key: ["used_percentage": 25, "resets_at": 1900000000]], "transcript_path": "synthetic-private-field"]))
+            }
+            for (process, output, input) in jobs {
+                let forwarded = output.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                try check(process.terminationStatus == 0 && forwarded == input, "既存statusLineへの入力転送を壊した")
+            }
+            let saved = try readJSON(state.appendingPathComponent("claude-status.json"))
+            try check((saved["rate_limits"] as? [String: Any])?.count == 2, "並列保存で片方の枠を消した")
+            try check(saved["transcript_path"] == nil, "不要なセッション情報を保存した")
+            let (process, output, _) = try start([:])
+            _ = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+            let after = try readJSON(state.appendingPathComponent("claude-status.json"))
+            try check((after["rate_limits"] as? [String: Any])?.count == 2, "実ヘルパーが空通知で前回値を消した")
+            try close(after["observed"] as? Double, saved["observed"] as! Double, "実ヘルパーが空通知で時刻を進めた")
         }
     }
 

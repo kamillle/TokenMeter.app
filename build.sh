@@ -6,10 +6,10 @@ BUILD_DIR="${TOKENMETER_BUILD_DIR:-${USAGEBAR_BUILD_DIR:-${TMPDIR:-/tmp}/tokenme
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources" "$BUILD_DIR/module-cache"
 swiftc -O -parse-as-library -target arm64-apple-macosx14.0 -swift-version 5 -module-cache-path "$BUILD_DIR/module-cache" \
   -framework AppKit -framework SwiftUI -framework ServiceManagement \
-  "$ROOT/Sources/Collector.swift" "$ROOT/Sources/PricingUpdater.swift" "$ROOT/Sources/ProviderStatus.swift" "$ROOT/Sources/SessionSorting.swift" "$ROOT/Sources/BridgeManager.swift" "$ROOT/Sources/TokenMeter.swift" \
+  "$ROOT/Sources/ClaudeQuotaCapture.swift" "$ROOT/Sources/ClaudeUsageClient.swift" "$ROOT/Sources/Collector.swift" "$ROOT/Sources/PricingUpdater.swift" "$ROOT/Sources/ProviderStatus.swift" "$ROOT/Sources/SessionSorting.swift" "$ROOT/Sources/BridgeManager.swift" "$ROOT/Sources/TokenMeter.swift" \
   -o "$APP/Contents/MacOS/TokenMeter"
 swiftc -O -parse-as-library -target arm64-apple-macosx14.0 -swift-version 5 -module-cache-path "$BUILD_DIR/module-cache" \
-  "$ROOT/Sources/ClaudeBridge.swift" -o "$APP/Contents/Helpers/TokenMeterClaudeBridge"
+  "$ROOT/Sources/ClaudeQuotaCapture.swift" "$ROOT/Sources/ClaudeBridge.swift" -o "$APP/Contents/Helpers/TokenMeterClaudeBridge"
 rm -f "$APP/Contents/Resources/collector.py" "$APP/Contents/Resources/claude_bridge.py" "$APP/Contents/Resources/bridge_setup.py"
 cp "$ROOT/Sources/pricing.json" "$APP/Contents/Resources/"
 cp "$ROOT/Sources/Assets/chatgpt-logo.png" "$ROOT/Sources/Assets/claude-logo.png" "$APP/Contents/Resources/"

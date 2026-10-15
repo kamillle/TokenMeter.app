@@ -21,6 +21,7 @@ struct Quota: Codable, Equatable {
     var accountID: String? = nil
     var bridgeInstalled: Bool?
     var linked: Bool?
+    var lastNotification: Double? = nil
 
     static var empty: Quota {
         Quota(windows: [], observed: 0, source: "読み込み中", error: "", stale: true, detail: "")
@@ -301,6 +302,7 @@ final class UsageCollector: @unchecked Sendable {
     let claudeAccountFile: URL
     let pricingURL: URL
     let scanConcurrency: Int
+    let claudeUsageClient: ClaudeUsageClient
     private let fileManager = FileManager.default
 
     init(
@@ -322,6 +324,8 @@ final class UsageCollector: @unchecked Sendable {
         self.claudeAccountFile = (claudeHome != nil || environment["CLAUDE_CONFIG_DIR"] != nil)
             ? self.claudeHome.appendingPathComponent(".claude.json")
             : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+        self.claudeUsageClient = ClaudeUsageClient(configDirectory:
+            (claudeHome != nil || environment["CLAUDE_CONFIG_DIR"] != nil) ? self.claudeHome : nil)
         self.pricingURL = pricingURL ?? Bundle.main.url(forResource: "pricing", withExtension: "json") ??
             URL(fileURLWithPath: "Sources/pricing.json")
     }
@@ -409,7 +413,7 @@ final class UsageCollector: @unchecked Sendable {
         let now = Date().timeIntervalSince1970
         return Snapshot(updated: now, sessions: summarize(states, prices: prices, titles: titles),
                         codex: codexQuota(states: states, live: live, force: force),
-                        claude: claudeQuota(), errors: errors.sorted(),
+                        claude: claudeQuota(live: live, force: force), errors: errors.sorted(),
                         pricingDate: officialPricing?.verified ?? bundledPricing?.verified ?? "",
                         scope: "このMacの直近30日以内に更新されたセッション · 数値は各セッションの累計")
     }
@@ -788,33 +792,96 @@ final class UsageCollector: @unchecked Sendable {
                      accountID: accountID, bridgeInstalled: nil, linked: linked)
     }
 
-    func claudeQuota(now: Double = Date().timeIntervalSince1970) -> Quota {
-        let data = readObject(from: stateDirectory.appendingPathComponent("claude-status.json")) ?? [:]
-        let observed = double(data["observed"]) ?? 0
+    func claudeQuota(live: Bool = false, force: Bool = false,
+                     now: Double = Date().timeIntervalSince1970,
+                     fetch: (() throws -> [String: Any])? = nil) -> Quota {
+        let accountID = claudeAccountID()
+        let path = stateDirectory.appendingPathComponent("claude-quota.json")
+        var cache = readCodable(ClaudeQuotaCache.self, from: path) ?? ClaudeQuotaCache()
+        if cache.version != 1 || cache.accountID != accountID { cache = ClaudeQuotaCache(accountID: accountID) }
+        if live && (force || cache.attempted == 0 || now - cache.attempted >= cache.retryInterval) {
+            cache.attempted = now
+            do {
+                let result = try fetch?() ?? claudeUsageClient.fetch()
+                let windows = try ClaudeUsageClient.windows(from: result, observed: now)
+                guard claudeAccountID() == accountID else { throw ClaudeUsageError.accountChanged }
+                cache.windows = windows
+                cache.observed = now
+                cache.accountID = accountID
+                cache.error = ""
+                cache.failures = 0
+            } catch {
+                // A concurrent account switch must not return old-account values.
+                if claudeAccountID() != accountID { cache = ClaudeQuotaCache(attempted: now, accountID: claudeAccountID()) }
+                cache.failures = min(5, cache.failures + 1)
+                cache.error = (error as? ClaudeUsageError)?.errorDescription ?? "Claudeの利用枠取得に失敗しました"
+            }
+            // Store only normalized windows and identity, never the raw /usage response.
+            try? atomicWrite(cache, to: path)
+        }
+        var notification = claudeNotificationQuota(now: now)
+        if cache.windows.isEmpty || (!cache.error.isEmpty && notification.observed > cache.observed) {
+            notification.error = cache.error
+            if live && notification.windows.isEmpty {
+                notification.detail = "Claude Codeのログイン済みCLIから通常1分ごとに取得します。statusLineの設定や会話の実行は不要です。取得できない場合はClaude Codeを更新し、ログイン状態を確認してください"
+            }
+            return notification
+        }
+        let windows = cache.windows.map { value -> LimitWindow in
+            var value = value
+            value.expired = value.resetsAt > 0 && value.resetsAt <= now
+            return value
+        }
+        let detail = windows.contains(where: \.expired)
+            ? "前回の利用枠はリセット時刻を過ぎました。新しい取得値を待っています"
+            : "Claude Codeから直接取得。通常1分ごとに更新します"
+        return Quota(windows: windows, observed: cache.observed, source: "Claude Code直接取得",
+                     error: cache.error, stale: now - cache.observed > 600, detail: detail,
+                     accountID: cache.accountID, bridgeInstalled: notification.bridgeInstalled, linked: true)
+    }
+
+    func claudeNotificationQuota(now: Double = Date().timeIntervalSince1970) -> Quota {
+        let stored = readObject(from: stateDirectory.appendingPathComponent("claude-status.json")) ?? [:]
+        let accountID = claudeAccountID()
+        let data = (stored["account_id"] as? String).map { $0 != accountID } == true ? [:] : stored
+        let legacyObserved = double(data["observed"]) ?? 0
+        let notification = double(data["last_notification"]) ?? legacyObserved
+        let times = object(data["window_observed"]) ?? [:]
         let limits = object(data["rate_limits"]) ?? [:]
         var windows: [LimitWindow] = []
         for (key, label) in [("five_hour", "5時間"), ("seven_day", "7日"), ("spend_limit", "支出枠")] {
-            guard let raw = object(limits[key]) else { continue }
+            guard let raw = ClaudeQuotaCapture.window(limits[key]) else { continue }
+            let observed = double(times[key]) ?? legacyObserved
             let normalized: [String: Any] = ["usedPercent": raw["used_percentage"] ?? NSNull(), "resetsAt": raw["resets_at"] ?? NSNull()]
             if var window = normalizeWindow(normalized, label: label, observed: observed, now: now) {
                 window.bucket = "claude"
                 windows.append(window)
             }
         }
+        let observed = windows.map(\.observed).min() ?? 0
         let config = readObject(from: stateDirectory.appendingPathComponent("bridge-config.json")) ?? [:]
         let installed = bool(config["installed"]) ?? false
         let detail: String
         if windows.isEmpty {
-            detail = installed
-                ? "連携済み・Claude Codeからの利用枠通知待ち。Pro/Maxの応答後に更新されます。接続先によっては通知されません"
-                : "「Claude連携」で使用率の通知を受け取れます。セッションのトークン集計は連携前でも利用できます"
+            if !installed {
+                detail = "「Claude連携」で使用率の通知を受け取れます。セッションのトークン集計は連携前でも利用できます"
+            } else if notification <= 0 || now - notification > 600 {
+                detail = "Claude Codeからの通知が届いていません。ターミナルのClaude Codeを再起動し、通常の会話で応答を受けてください。/usage だけでは更新されない場合があります"
+            } else {
+                detail = "通知は届いていますが、利用枠が含まれていません。通常の会話の応答後も変わらない場合は、Claudeの利用状況ページで確認してください"
+            }
         } else if windows.contains(where: \.expired) {
-            detail = "前回の利用枠はリセット時刻を過ぎました。Claude Codeからの新しい通知待ちです。Claude Codeで応答後も変わらない場合は、利用状況ページで確認してください。更新ボタンは保存済み通知を読み直します"
-        } else { detail = "Claude Codeからの最終通知。会話の応答時に更新されます" }
+            detail = "前回の利用枠はリセット時刻を過ぎ、新しい通知待ちです。残り100%とは推測しません。Claudeの利用状況ページで確認できます"
+        } else if now - observed > 600 {
+            detail = "前回の利用枠を保持しています。10分以上数値の変化を確認できていません。通知の定期受信だけではサーバーの最新値か確認できません"
+        } else if let received = data["notification_windows"] as? [String], received.count < windows.count {
+            detail = "直近の通知に含まれない利用枠は、前回の値と取得時刻を保持しています"
+        } else { detail = "Claude Codeから通知された利用枠。空の通知では前回の値を保持します" }
         return Quota(windows: windows, observed: observed, source: observed > 0 ? "Claude Code通知" : "未取得",
-                     error: "", stale: now - observed > 600, detail: detail,
-                     accountID: claudeAccountID(),
-                     bridgeInstalled: installed, linked: installed && !windows.isEmpty)
+                     error: "", stale: observed <= 0 || now - observed > 600, detail: detail,
+                     accountID: accountID,
+                     bridgeInstalled: installed, linked: installed && !windows.isEmpty,
+                     lastNotification: notification > 0 ? notification : nil)
     }
 
     func claudeAccountID() -> String? {

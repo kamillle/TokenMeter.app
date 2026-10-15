@@ -238,7 +238,7 @@ struct Panel: View {
             .help(store.page == "usage" ? "使用状況を更新" : "プロバイダーステータスを更新")
             Menu {
                 Button("ログイン時に起動 " + (store.loginEnabled ? "✓" : "")) { store.toggleLogin() }
-                Button("Claude連携を" + (store.quota("claude").bridgeInstalled == true ? "解除" : "有効にする")) { store.bridge(remove: store.quota("claude").bridgeInstalled == true) }
+                Button("Claude通知の補助連携を" + (store.quota("claude").bridgeInstalled == true ? "解除" : "有効にする")) { store.bridge(remove: store.quota("claude").bridgeInstalled == true) }
                 Divider()
                 Button("TokenMeterを終了") { NSApplication.shared.terminate(nil) }
             } label: { Image(systemName: "gearshape") }.menuStyle(.borderlessButton).frame(width: 24)
@@ -496,6 +496,14 @@ struct Panel: View {
                         .help(q.accountID ?? "未取得")
                 }.font(.system(size: 11))
             }
+            if store.selected == "claude", q.observed > 0 {
+                Text(q.source + " · " + dateText(q.observed))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            if store.selected == "claude", let notification = q.lastNotification {
+                Text("最終通知 · " + dateText(notification) + "（利用枠の更新とは別）")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             if q.windows.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(store.loading && store.snapshot == nil ? "読み込み中…" : "利用枠は未取得")
@@ -522,7 +530,7 @@ struct Panel: View {
                 }.font(.system(size: 11))
             }
             if !q.error.isEmpty {
-                Label(q.error + " · ログの最終取得値で補完", systemImage: "exclamationmark.triangle")
+                Label(q.error + (q.windows.isEmpty ? "" : " · 前回の取得値で補完"), systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11)).foregroundStyle(.orange)
             }
             if store.selected == "claude" && (q.windows.isEmpty || q.stale || q.windows.contains(where: \.expired)) {
@@ -530,7 +538,7 @@ struct Panel: View {
                     Text(q.detail).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 HStack {
-                    if q.bridgeInstalled != true { Button("Claude連携を有効にする") { store.bridge() }.controlSize(.small) }
+                    Button("再取得") { store.refresh(force: true) }.controlSize(.small)
                     Button("Claudeの利用状況を開く") { NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!) }.controlSize(.small)
                 }
             }
